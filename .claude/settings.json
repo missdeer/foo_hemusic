@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash .claude/hooks/legacy-cli-pretool.sh",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/legacy-cli-pretool.sh\"",
             "timeout": 10
           }
         ]
@@ -19,13 +19,13 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash .claude/hooks/clang-format-postedit.sh",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/clang-format-postedit.sh\"",
             "timeout": 30,
             "statusMessage": "Running clang-format on edited C++ file"
           },
           {
             "type": "command",
-            "command": "bash .claude/hooks/clang-tidy-postedit.sh",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/clang-tidy-postedit.sh\"",
             "timeout": 60,
             "statusMessage": "Running clang-tidy on edited C++ file"
           }
@@ -37,7 +37,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash .claude/hooks/clang-tidy-stop.sh",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/clang-tidy-stop.sh\"",
             "timeout": 300,
             "statusMessage": "Batch clang-tidy on modified foo_hemusic sources"
           }
