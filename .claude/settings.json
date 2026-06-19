@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/legacy-cli-pretool.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/clang-format-postedit.sh",
+            "timeout": 30,
+            "statusMessage": "Running clang-format on edited C++ file"
+          },
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/clang-tidy-postedit.sh",
+            "timeout": 60,
+            "statusMessage": "Running clang-tidy on edited C++ file"
+          },
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/clazy-postedit.sh",
+            "timeout": 60,
+            "statusMessage": "Running clazy on edited C++ file"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/clang-tidy-stop.sh",
+            "timeout": 300,
+            "statusMessage": "Batch clang-tidy on modified crawler-webengine sources"
+          },
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/clazy-stop.sh",
+            "timeout": 300,
+            "statusMessage": "Batch clazy on modified crawler-webengine sources"
+          }
+        ]
+      }
+    ]
+  }
+}

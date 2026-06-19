@@ -3,8 +3,9 @@
 /foobar2000-SDK-2025-03-07/
 # Reference implementation (has its own upstream git repo).
 /HE-Music-Flutter/
-# Claude Code local config / hooks.
-/.claude/
+# Claude Code: track shared config (hooks/commands/rules/settings.json),
+# but not the personal per-machine override.
+/.claude/settings.local.json
 
 # --- Build output -----------------------------------------------------------
 /foo_hemusic/build/
