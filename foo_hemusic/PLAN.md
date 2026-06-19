@@ -236,7 +236,10 @@ foo_hemusic/
 ### Phase 1 — 鉴权链路（2~3 天）
 
 - [x] `device_info`：`src/auth/device_info.{h,cpp}` + Catch2 测试。身份**伪装成 Flutter**（`app_type="flutter"`、`device_id="flutter_windows_<uuid>"`、`platform="windows"`）；持久化 device_id 留给 caller（cfg_var，待 `core/config`）。测试断言 5 字段契约通过
-- [ ] `oauth_flow`：实现 `GET /v1/auth/providers` → `POST /v1/auth/session`（带 device_info，非旧文档的 `/code/url`）→ `ShellExecuteW(url)` → 按 `check_interval` 轮询 `/v1/auth/status` → `/v1/auth/result`
+- `oauth_flow`（拆分小步，以 Flutter `OnlineApiClient` 为准）：
+  - [x] 消息层 `src/auth/oauth_flow.{h,cpp}` + `src/net/json_codec.h`：请求体构造（`buildSessionRequest`/`buildRefreshRequest`，`redirect_uri` 空则不带、`device_info` 必带）+ 响应解析（`parseAuthProviders`/`parseAuthCodeUrl`/`parseAuthStatus`/`parseAuthToken`），含 Flutter `_asInt` 字符串数字容错、`status` 分类枚举、旧后端单 `token`(顶层 + `data.token`) 回退。10 个 Catch2 用例覆盖契约（`tests/oauth_flow_test.cpp`，全绿）
+  - [ ] 传输层 `src/net/http_client.{h,cpp}`：WinHTTP 同步请求（GET/POST + JSON body + header 注入 `authorization: Bearer`），connect 20s / read 30s
+  - [ ] 编排：`GET /v1/auth/providers` → `POST /v1/auth/session` → `ShellExecuteW(url)` → 按 `check_interval` 轮询 `/v1/auth/status` → `/v1/auth/result`（可取消）
 - [ ] `token_store`：DPAPI 加密落地到 `%APPDATA%\foobar2000\user-components\foo_hemusic\token.bin`
 - [ ] 临时 UI（Win32 dialog，含"正在等待授权"进度文字 + 取消按钮）发起登录流，**不依赖 WebView2 完工**
 - [ ] `GET /v1/user/info` 验证 token

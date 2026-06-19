@@ -91,7 +91,8 @@ find_package(boost_json CONFIG REQUIRED)
 # --- Business-logic core (SDK-independent, unit-testable) --------------------
 # Pure业务层（auth / net / api）放这里：不碰 foobar2000 SDK，可被 tests 直接链接。
 add_library(hemusic_core STATIC
-  src/auth/device_info.cpp)
+  src/auth/device_info.cpp
+  src/auth/oauth_flow.cpp)
 target_include_directories(hemusic_core PUBLIC src)
 target_compile_features(hemusic_core PUBLIC cxx_std_20)
 target_compile_definitions(hemusic_core PUBLIC UNICODE _UNICODE)
@@ -122,7 +123,9 @@ option(FOO_HEMUSIC_TESTS "Build unit tests" ON)
 if(FOO_HEMUSIC_TESTS)
   find_package(Catch2 3 CONFIG REQUIRED)
   enable_testing()
-  add_executable(hemusic_tests tests/device_info_test.cpp)
+  add_executable(hemusic_tests
+    tests/device_info_test.cpp
+    tests/oauth_flow_test.cpp)
   target_link_libraries(hemusic_tests PRIVATE hemusic_core Catch2::Catch2WithMain)
   add_test(NAME hemusic_tests COMMAND hemusic_tests)
 endif()
