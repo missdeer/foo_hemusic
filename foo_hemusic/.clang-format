@@ -1,0 +1,15 @@
+# foo_hemusic C++ style — matches existing code (component.cpp, src/auth/*):
+# Google base, attached braces, 4-space indent, pointer-left.
+# SortIncludes is OFF on purpose: Win32 / SDK headers are order-sensitive
+# (e.g. <rpc.h> must follow <windows.h>, stdafx.h must come first);
+# alphabetic sorting would reorder them and break the build.
+---
+Language: Cpp
+BasedOnStyle: Google
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ColumnLimit: 80
+PointerAlignment: Left
+DerivePointerAlignment: false
+SortIncludes: false

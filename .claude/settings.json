@@ -28,12 +28,6 @@
             "command": "bash .claude/hooks/clang-tidy-postedit.sh",
             "timeout": 60,
             "statusMessage": "Running clang-tidy on edited C++ file"
-          },
-          {
-            "type": "command",
-            "command": "bash .claude/hooks/clazy-postedit.sh",
-            "timeout": 60,
-            "statusMessage": "Running clazy on edited C++ file"
           }
         ]
       }
@@ -45,13 +39,7 @@
             "type": "command",
             "command": "bash .claude/hooks/clang-tidy-stop.sh",
             "timeout": 300,
-            "statusMessage": "Batch clang-tidy on modified crawler-webengine sources"
-          },
-          {
-            "type": "command",
-            "command": "bash .claude/hooks/clazy-stop.sh",
-            "timeout": 300,
-            "statusMessage": "Batch clazy on modified crawler-webengine sources"
+            "statusMessage": "Batch clang-tidy on modified foo_hemusic sources"
           }
         ]
       }

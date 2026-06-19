@@ -122,7 +122,7 @@ foobar2000 组件链接 `shared.dll`，而 `shared.dll` 已经导出了 `pfc::cr
 - Linux.do **只是 HE-Music 的一个 OAuth provider 名**，客户端不直接与 Linux.do 交互
 - Token 用 **DPAPI** 加密落地，不进明文 cfg；注意是 **双 token**（`access_token` + `refresh_token` + `expires_at` 都要存），401 时用 `refresh_token` 走 `POST /v1/auth/token/refresh` 续期后重放原请求
 - 所有带 token 的 HTTP 请求统一走 C++ 侧 WinHTTP，不引入第三方 HTTP 库
-- JSON 用 **nlohmann/json**，单元测试用 **Catch2**
+- JSON 用 **Boost.JSON**（vcpkg `boost-json`），单元测试用 **Catch2**；依赖走 **vcpkg manifest**（`foo_hemusic/vcpkg.json`），CMake 接 `D:\vcpkg\scripts\buildsystems\vcpkg.cmake` toolchain。（原计划用 nlohmann/json，已于 2026-06-19 改为 Boost.JSON：分离编译、编译开销更小、`if_contains` 适配字段别名兼容）
 - 默认只支持 foobar2000 **v2**，先发 x64
 
 # 编码约定（当代码开始存在后适用）
@@ -134,4 +134,25 @@ foobar2000 组件链接 `shared.dll`，而 `shared.dll` 已经导出了 `pfc::cr
 
 # 常用命令
 
-**目前还没有任何可运行的命令**。当 Phase 0 完成、构建系统建立后，本节应补充：构建命令、单元测试命令、打包 `.fb2k-component` 命令。在那之前不要伪造命令清单。
+构建系统:CMake + **Ninja Multi-Config** + vcpkg manifest。用 **Ninja 生成器**是为了导出
+`build/compile_commands.json`(VS 生成器不导出),供 clang-tidy / clang-format hook 使用。
+Ninja 需要 MSVC 开发环境(cl 在 PATH),脚本已封装 vcvars 探测。在 `foo_hemusic/` 下执行:
+
+```bash
+scripts\configure.bat            # 首次配置(vcvars→Ninja→vcpkg 装 boost-json/catch2)
+scripts\build.bat                # 构建 Release(组件 DLL + 测试);build.bat Debug 构 Debug
+./build/Release/hemusic_tests.exe   # 跑 Catch2 单元测试
+```
+
+- VS 安装不在默认路径时,设环境变量 `VCVARS64=<vcvars64.bat 全路径>` 覆盖(见 `scripts/_vcvars.bat`)。
+- 产物:`build/Release/foo_hemusic.dll`(组件)、`build/Release/hemusic_tests.exe`(测试)。
+- `build/compile_commands.json` 由配置自动生成;PostToolUse/Stop 的 clang-tidy hook 依赖它存在,
+  缺失时静默跳过(故新克隆需先 `scripts\configure.bat` 一次)。
+- `.fb2k-component` 打包脚本待 Phase 8。
+
+## clang 工具链 hook(`.claude/hooks/`)
+
+- `clang-format-postedit.sh`:编辑 `foo_hemusic/{src,tests}` 的 C++ 文件后按 `.clang-format` 自动格式化。
+- `clang-tidy-postedit.sh` / `clang-tidy-stop.sh`:按 `.clang-tidy` 静态检查(经 `compile_commands.json`)。
+- 工具解析:优先 PATH,其次 `CLANG_TOOLS_DIR`(在 `settings.local.json` 设为本机 LLVM bin),找不到则静默跳过。
+- `.clang-format` 关 `SortIncludes`、`.clang-tidy` 关掉与 Win32 互操作冲突的检查(C 数组 / reinterpret_cast / include 排序)。

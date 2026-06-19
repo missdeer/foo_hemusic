@@ -13,6 +13,11 @@ if(NOT MSVC)
   message(FATAL_ERROR "foo_hemusic targets foobar2000 on Windows / MSVC only.")
 endif()
 
+# Export compile_commands.json for clang-tidy / clang-format / editors.
+# Only the Ninja and Makefile generators honor this (the VS generator ignores
+# it), which is why the project configures with "Ninja Multi-Config".
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 # --- foobar2000 SDK location + auto-fetch ------------------------------------
 get_filename_component(_repo_root "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
 set(FB2K_SDK_ROOT "${_repo_root}/foobar2000-SDK-2025-03-07"
@@ -80,12 +85,25 @@ target_include_directories(fb2k_sdk PUBLIC
 target_compile_features(fb2k_sdk PUBLIC cxx_std_17)   # SDK's own standard
 target_compile_definitions(fb2k_sdk PUBLIC UNICODE _UNICODE)
 
+# --- Third-party deps (vcpkg manifest: vcpkg.json) ---------------------------
+find_package(boost_json CONFIG REQUIRED)
+
+# --- Business-logic core (SDK-independent, unit-testable) --------------------
+# Pure业务层（auth / net / api）放这里：不碰 foobar2000 SDK，可被 tests 直接链接。
+add_library(hemusic_core STATIC
+  src/auth/device_info.cpp)
+target_include_directories(hemusic_core PUBLIC src)
+target_compile_features(hemusic_core PUBLIC cxx_std_20)
+target_compile_definitions(hemusic_core PUBLIC UNICODE _UNICODE)
+target_link_libraries(hemusic_core PUBLIC Boost::json PRIVATE rpcrt4)
+
 # --- The component DLL -------------------------------------------------------
 add_library(foo_hemusic SHARED src/component.cpp)
 target_compile_features(foo_hemusic PRIVATE cxx_std_20)
 
 target_link_libraries(foo_hemusic PRIVATE
   fb2k_sdk
+  hemusic_core
   "${_fb2k_shared}"
   shlwapi comctl32 uxtheme gdi32 user32 ole32 oleaut32 shell32 advapi32 comdlg32)
 
@@ -98,3 +116,13 @@ set_target_properties(foo_hemusic PROPERTIES
   PREFIX ""
   OUTPUT_NAME "foo_hemusic"
   SUFFIX ".dll")
+
+# --- Unit tests (Catch2, links hemusic_core only — no SDK) -------------------
+option(FOO_HEMUSIC_TESTS "Build unit tests" ON)
+if(FOO_HEMUSIC_TESTS)
+  find_package(Catch2 3 CONFIG REQUIRED)
+  enable_testing()
+  add_executable(hemusic_tests tests/device_info_test.cpp)
+  target_link_libraries(hemusic_tests PRIVATE hemusic_core Catch2::Catch2WithMain)
+  add_test(NAME hemusic_tests COMMAND hemusic_tests)
+endif()

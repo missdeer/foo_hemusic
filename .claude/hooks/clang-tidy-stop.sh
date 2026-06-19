@@ -1,13 +1,19 @@
 #!/usr/bin/env bash
-# Stop hook: batch-lint modified/untracked C++ sources in
-# tools/crawler-webengine/ via git diff. If any diagnostics surface, block
-# the stop so Claude is forced to address them before ending the turn.
+# Stop hook: batch-lint modified/untracked C++ sources under foo_hemusic/
+# {src,tests} via git diff. If any diagnostics surface, block the stop so
+# Claude is forced to address them before ending the turn.
 
 set -uo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-build_dir="$repo_root/tools/crawler-webengine/cmake-build"
+build_dir="$repo_root/foo_hemusic/build"
 [ -f "$build_dir/compile_commands.json" ] || exit 0
+
+# Resolve clang-tidy. Fold in $CLANG_TOOLS_DIR (hooks get a narrow PATH);
+# `command -v` resolves the .exe suffix on Windows. No-op if absent.
+[ -n "${CLANG_TOOLS_DIR:-}" ] && PATH="$CLANG_TOOLS_DIR:$PATH"
+tidy="$(command -v clang-tidy 2>/dev/null || true)"
+[ -z "$tidy" ] && exit 0
 
 cd "$repo_root" || exit 0
 
@@ -21,7 +27,7 @@ done < <(
     git diff --name-only
     git diff --cached --name-only
     git ls-files --others --exclude-standard
-  } 2>/dev/null | sort -u | grep -E '^tools/crawler-webengine/.*\.(cpp|cc|cxx|h|hpp|hxx)$' || true
+  } 2>/dev/null | sort -u | grep -E '^foo_hemusic/(src|tests)/.*\.(cpp|cc|cxx|h|hpp|hxx)$' || true
 )
 
 [ "${#files[@]}" -eq 0 ] && exit 0
@@ -29,14 +35,14 @@ done < <(
 all_output=""
 for f in "${files[@]}"; do
   [ -f "$f" ] || continue
-  out="$(clang-tidy --quiet -p "$build_dir" "$f" 2>&1)"
+  out="$("$tidy" --quiet -p "$build_dir" "$f" 2>&1)"
   if printf '%s' "$out" | grep -qE '(warning|error):'; then
     all_output+=$'\n=== '"$f"$' ===\n'"$out"
   fi
 done
 
 if [ -n "$all_output" ]; then
-  ctx=$'clang-tidy found issues in modified C++ files under tools/crawler-webengine/. Resolve them before stopping:\n'"$all_output"
+  ctx=$'clang-tidy found issues in modified C++ files under foo_hemusic/. Resolve them before stopping:\n'"$all_output"
   jq -n --arg ctx "$ctx" '{
     decision: "block",
     reason: $ctx

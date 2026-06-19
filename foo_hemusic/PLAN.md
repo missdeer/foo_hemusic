@@ -50,7 +50,8 @@ foobar2000 组件 (component)，把 HE-Music 后端做成"接入式音乐源"。
 | UI 实现 | **Direct2D + DirectWrite 自绘** + 必要处用 Win32 控件（输入框、按钮） | 列表/卡片自绘，主题对齐 fb2k 当前色系；视觉对齐 HE-Music 仅在配色 / 排版上贴齐 |
 | 列表组件 | SDK 自带的 `libPPUI` 提供的 `CListControl` / `CListControlOwnerData` | 已有虚拟滚动、双缓冲、皮肤适配，省一大块基建 |
 | HTTP | **WinHTTP** | SDK `http_client` 功能不够；所有带 token 的请求统一走 WinHTTP |
-| JSON | nlohmann/json (header‑only) | 与 SDK 无冲突 |
+| JSON | **Boost.JSON**（vcpkg `boost-json`） | 分离编译，编译开销小于 nlohmann 单头；`if_contains` 适配 Flutter 多候选 key 别名兼容 |
+| 依赖管理 | **vcpkg manifest**（`vcpkg.json`） | CMake 接 vcpkg toolchain 自动安装 boost-json / catch2 |
 | 持久化 | foobar2000 `cfg_var` + Windows DPAPI（token） | token 不进明文 cfg |
 | OAuth 回调 | **无需本地服务器**，HE-Music 后端接收回调，客户端轮询 `/v1/auth/status` | Flutter 已验证可行 |
 | 单元测试 | Catch2 | 与 SDK 解耦的纯业务层（API client / URL resolver） |
@@ -151,8 +152,7 @@ foo_hemusic/
 ├── CMakeLists.txt
 ├── PLAN.md                      ← 本文件
 ├── README.md                    ← 用户安装指南（最后才写）
-├── third_party/
-│   └── nlohmann_json/
+├── vcpkg.json                    ← vcpkg manifest（boost-json / catch2）
 ├── src/
 │   ├── component.cpp            ← 组件入口、版本信息、initquit
 │   ├── core/
@@ -162,7 +162,7 @@ foo_hemusic/
 │   ├── net/
 │   │   ├── http_client.{h,cpp}  ← WinHTTP 封装 + Bearer 注入 + 重试
 │   │   ├── interceptors.{h,cpp} ← 401 跳登录 / 403 captcha 重放 / 错误吐司
-│   │   └── json_codec.h         ← 工具，把 nlohmann::json ↔ 业务结构体
+│   │   └── json_codec.h         ← 工具，把 boost::json::value ↔ 业务结构体
 │   ├── auth/
 │   │   ├── oauth_flow.{h,cpp}   ← /v1/auth/providers + /code/url + /status + /result
 │   │   ├── device_info.{h,cpp}  ← 收集 device_info 上报字段（对齐 Flutter）
@@ -225,17 +225,18 @@ foo_hemusic/
 
 ### Phase 0 — 工程脚手架（1~2 天）
 
-- [ ] 拉取 SDK，验证 `foo_sample` 能编译并被 foobar2000 加载
-- [ ] 建立 `foo_hemusic/` 项目结构，CMakeLists 复用 SDK 中的 `pfc / shared / SDK / helpers / libPPUI` 静态库
-- [ ] 写最小 `component.cpp`：注册版本信息、初始化日志
-- [ ] `make install` 等价脚本：把 `foo_hemusic.dll` 打包成 `.fb2k-component` 并 copy 到 foobar2000 用户组件目录
+- [x] CMakeLists 从源码编译 `pfc + SDK + component_client` 为 `fb2k_sdk` 静态库（helpers/libPPUI 待 UI 阶段加）
+- [x] 写最小 `component.cpp`：`DECLARE_COMPONENT_VERSION` + `initquit` 打印加载日志
+- [x] Release 构建产出 `foo_hemusic.dll`（vcpkg toolchain，boost-json/catch2 经 manifest 安装）
+- [x] 在 foobar2000 实机加载 DLL，确认"组件"列表显示 `foo_hemusic 0.0.1`（已人工确认 2026-06-19）
+- [ ] `.fb2k-component` 打包脚本（推迟到 Phase 8 一并做）
 
 **交付**：foobar2000 启动后，"组件" 列表能看到 `foo_hemusic 0.0.1`。
 
 ### Phase 1 — 鉴权链路（2~3 天）
 
-- [ ] `device_info`：收集 OS 版本、机器名、组件版本，对齐 Flutter 的字段名
-- [ ] `oauth_flow`：实现 `GET /v1/auth/providers` → `POST /v1/auth/code/url` → `ShellExecuteW(url)` → 按 `check_interval` 轮询 `/v1/auth/status` → `/v1/auth/result`
+- [x] `device_info`：`src/auth/device_info.{h,cpp}` + Catch2 测试。身份**伪装成 Flutter**（`app_type="flutter"`、`device_id="flutter_windows_<uuid>"`、`platform="windows"`）；持久化 device_id 留给 caller（cfg_var，待 `core/config`）。测试断言 5 字段契约通过
+- [ ] `oauth_flow`：实现 `GET /v1/auth/providers` → `POST /v1/auth/session`（带 device_info，非旧文档的 `/code/url`）→ `ShellExecuteW(url)` → 按 `check_interval` 轮询 `/v1/auth/status` → `/v1/auth/result`
 - [ ] `token_store`：DPAPI 加密落地到 `%APPDATA%\foobar2000\user-components\foo_hemusic\token.bin`
 - [ ] 临时 UI（Win32 dialog，含"正在等待授权"进度文字 + 取消按钮）发起登录流，**不依赖 WebView2 完工**
 - [ ] `GET /v1/user/info` 验证 token
