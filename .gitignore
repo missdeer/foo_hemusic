@@ -1,0 +1,13 @@
+# --- Not part of this repository --------------------------------------------
+# foobar2000 SDK: auto-downloaded by foo_hemusic/CMakeLists.txt when absent.
+/foobar2000-SDK-2025-03-07/
+# Reference implementation (has its own upstream git repo).
+/HE-Music-Flutter/
+# Claude Code local config / hooks.
+/.claude/
+
+# --- Build output -----------------------------------------------------------
+/foo_hemusic/build/
+/foo_hemusic/build*/
+.vs/
+*.user

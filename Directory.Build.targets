@@ -1,0 +1,18 @@
+<Project>
+  <!--
+    Inject WTL include path into every vcxproj under this directory.
+    Loaded automatically by MSBuild after each project file, so it can
+    prepend to the project's own AdditionalIncludeDirectories list.
+
+    Override via environment: set WTLIncludeDir=D:\path\to\WTL\Include
+  -->
+  <PropertyGroup>
+    <WTLIncludeDir Condition="'$(WTLIncludeDir)' == ''">$(MSBuildThisFileDirectory)wtl\Include</WTLIncludeDir>
+  </PropertyGroup>
+
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <AdditionalIncludeDirectories>$(WTLIncludeDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+  </ItemDefinitionGroup>
+</Project>
