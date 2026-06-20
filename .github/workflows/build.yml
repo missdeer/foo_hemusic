@@ -42,7 +42,7 @@ jobs:
         run: >
           cmake -S foo_hemusic -B foo_hemusic/build -G "Ninja Multi-Config"
           -DVCPKG_TARGET_TRIPLET=x64-windows-static-md
-          -DCMAKE_TOOLCHAIN_FILE=${env:VCPKG_INSTALLATION_ROOT}/scripts/buildsystems/vcpkg.cmake
+          "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
 
       - name: Build
         run: cmake --build foo_hemusic/build --config Release
