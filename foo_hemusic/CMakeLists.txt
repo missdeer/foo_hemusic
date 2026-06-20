@@ -92,11 +92,12 @@ find_package(boost_json CONFIG REQUIRED)
 # Pure业务层（auth / net / api）放这里：不碰 foobar2000 SDK，可被 tests 直接链接。
 add_library(hemusic_core STATIC
   src/auth/device_info.cpp
-  src/auth/oauth_flow.cpp)
+  src/auth/oauth_flow.cpp
+  src/net/http_client.cpp)
 target_include_directories(hemusic_core PUBLIC src)
 target_compile_features(hemusic_core PUBLIC cxx_std_20)
 target_compile_definitions(hemusic_core PUBLIC UNICODE _UNICODE)
-target_link_libraries(hemusic_core PUBLIC Boost::json PRIVATE rpcrt4)
+target_link_libraries(hemusic_core PUBLIC Boost::json PRIVATE rpcrt4 winhttp)
 
 # --- The component DLL -------------------------------------------------------
 add_library(foo_hemusic SHARED src/component.cpp)
@@ -125,7 +126,8 @@ if(FOO_HEMUSIC_TESTS)
   enable_testing()
   add_executable(hemusic_tests
     tests/device_info_test.cpp
-    tests/oauth_flow_test.cpp)
+    tests/oauth_flow_test.cpp
+    tests/http_client_test.cpp)
   target_link_libraries(hemusic_tests PRIVATE hemusic_core Catch2::Catch2WithMain)
   add_test(NAME hemusic_tests COMMAND hemusic_tests)
 endif()
