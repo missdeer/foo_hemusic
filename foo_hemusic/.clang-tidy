@@ -81,11 +81,19 @@ Checks: '-*,
   -cppcoreguidelines-pro-type-cstyle-cast,
   -cppcoreguidelines-avoid-c-arrays,
   -modernize-avoid-c-arrays,
+  -cppcoreguidelines-avoid-non-const-global-variables,
+  -performance-no-int-to-ptr,
+  -cppcoreguidelines-interfaces-global-init,
+  -cppcoreguidelines-virtual-class-destructor,
   -readability-identifier-length,
   -modernize-use-nodiscard'
 
 # Win32 / SDK / boost interop uses C arrays, reinterpret_cast and
 # windows.h-before-rpc.h ordering on purpose; the disables above keep
-# clang-tidy from fighting unavoidable platform idioms.
+# clang-tidy from fighting unavoidable platform idioms. fb2k cfg_var and
+# FB2K_SERVICE_FACTORY require namespace-scope non-const globals (they
+# self-register for config I/O), hence avoid-non-const-global-variables is off.
+# Win32 message params / GWLP_USERDATA / HBRUSH(COLOR_*+1) / HMENU(controlId)
+# fundamentally need int<->ptr casts, hence performance-no-int-to-ptr is off.
 HeaderFilterRegex: '.*[/\\]foo_hemusic[/\\]src[/\\].*'
 WarningsAsErrors: ''

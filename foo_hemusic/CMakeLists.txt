@@ -93,15 +93,23 @@ find_package(boost_json CONFIG REQUIRED)
 add_library(hemusic_core STATIC
   src/auth/device_info.cpp
   src/auth/oauth_flow.cpp
+  src/auth/login_flow.cpp
+  src/auth/token_store.cpp
   src/net/http_client.cpp)
 target_include_directories(hemusic_core PUBLIC src)
 target_compile_features(hemusic_core PUBLIC cxx_std_20)
 target_compile_definitions(hemusic_core PUBLIC UNICODE _UNICODE)
-target_link_libraries(hemusic_core PUBLIC Boost::json PRIVATE rpcrt4 winhttp)
+target_link_libraries(hemusic_core PUBLIC Boost::json PRIVATE rpcrt4 winhttp crypt32)
 
 # --- The component DLL -------------------------------------------------------
-add_library(foo_hemusic SHARED src/component.cpp)
+add_library(foo_hemusic SHARED
+  src/component.cpp
+  src/core/config.cpp
+  src/ui/pages/login_dlg.cpp)
 target_compile_features(foo_hemusic PRIVATE cxx_std_20)
+# UTF-8 source + execution charset so the dialog's Chinese literals (narrow for
+# console/popup, wide for Win32) encode correctly under MSVC.
+target_compile_options(foo_hemusic PRIVATE /utf-8)
 
 target_link_libraries(foo_hemusic PRIVATE
   fb2k_sdk
@@ -127,6 +135,9 @@ if(FOO_HEMUSIC_TESTS)
   add_executable(hemusic_tests
     tests/device_info_test.cpp
     tests/oauth_flow_test.cpp
+    tests/login_flow_test.cpp
+    tests/token_store_test.cpp
+    tests/user_info_test.cpp
     tests/http_client_test.cpp)
   target_link_libraries(hemusic_tests PRIVATE hemusic_core Catch2::Catch2WithMain)
   add_test(NAME hemusic_tests COMMAND hemusic_tests)
