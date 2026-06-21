@@ -117,6 +117,7 @@ foobar2000 组件链接 `shared.dll`，而 `shared.dll` 已经导出了 `pfc::cr
 
 下列决策已在 PLAN 讨论过并选定，除非用户明确要求重新评估，不要再提：
 
+- **库选型优先级**：C++ 标准库 > Boost > Windows API / 组件 > 业界成熟流行库。避免自造轮子；标准库 / Boost / Win32 能解决的不引第三方；确需引入时选经过检验的成熟库（如已敲定的 Boost.JSON / Catch2），并在此处登记。
 - UI 全部原生（**不用** WebView2 / Sciter / React / Tauri / Qt）
 - OAuth 回调**不**起本地 loopback HTTP 服务器——HE-Music 后端自己接收，客户端只轮询 `/v1/auth/status`
 - Linux.do **只是 HE-Music 的一个 OAuth provider 名**，客户端不直接与 Linux.do 交互
