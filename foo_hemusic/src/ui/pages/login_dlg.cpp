@@ -25,6 +25,7 @@
 #include "auth/login_flow.h"
 #include "auth/token_store.h"
 #include "core/config.h"
+#include "core/session.h"
 #include "net/http_client.h"
 
 // Threading model: the menu command runs on fb2k's main thread and creates this
@@ -121,9 +122,10 @@ struct LoginUi {
     std::thread worker;
 
     // Captured on the main thread so the worker never touches cfg_var/core_api.
+    // Disk persistence on success goes through Session, which already holds
+    // the path captured at component init.
     std::string baseUrl;
     DeviceInfo device;
-    std::filesystem::path tokenPath;
 };
 
 LoginUi* g_active = nullptr;  // main-thread only
@@ -188,7 +190,11 @@ void loginWorker(LoginUi* ui) {
     auto payload = std::make_unique<DonePayload>();
     payload->outcome = result.outcome;
     if (result.outcome == LoginOutcome::Success) {
-        payload->persisted = TokenStore(ui->tokenPath).save(result.token);
+        // Push the credential through Session so the in-memory snapshot every
+        // page consults is updated atomically with the disk write -- a later
+        // ApiClient::send (from any thread) picks up the new bearer without
+        // ever rereading the file.
+        payload->persisted = Session::instance().setTokens(result.token);
         payload->detail =
             fetchUsername(http, ui->baseUrl, result.token.accessToken);
     } else {
@@ -346,7 +352,6 @@ void showLoginDialog() {
     ui->baseUrl = config::apiBaseUrl();
     ui->device =
         makeDeviceInfo(config::deviceId(), queryComputerName(), kAppVersion);
-    ui->tokenPath = config::tokenStorePath();
 
     HINSTANCE inst = core_api::get_my_instance();
     auto* owner = reinterpret_cast<HWND>(core_api::get_main_window());

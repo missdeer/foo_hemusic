@@ -13,6 +13,12 @@ if(NOT MSVC)
   message(FATAL_ERROR "foo_hemusic targets foobar2000 on Windows / MSVC only.")
 endif()
 
+# UTF-8 source + execution charset for every target. Several headers carry
+# CJK comments and a few sources have CJK string literals; without /utf-8
+# MSVC reads them as the system code page (936 on zh-CN Windows) and emits
+# C4819 for any UTF-8 byte sequence that isn't also a valid GBK character.
+add_compile_options(/utf-8)
+
 # Export compile_commands.json for clang-tidy / clang-format / editors.
 # Only the Ninja and Makefile generators honor this (the VS generator ignores
 # it), which is why the project configures with "Ninja Multi-Config".
@@ -95,9 +101,11 @@ add_library(hemusic_core STATIC
   src/auth/oauth_flow.cpp
   src/auth/login_flow.cpp
   src/auth/token_store.cpp
+  src/core/session.cpp
   src/net/http_client.cpp
   src/net/api_client.cpp
-  src/playback/url_resolver.cpp)
+  src/playback/url_resolver.cpp
+  src/ui/nav.cpp)
 target_include_directories(hemusic_core PUBLIC src)
 target_compile_features(hemusic_core PUBLIC cxx_std_20)
 target_compile_definitions(hemusic_core PUBLIC UNICODE _UNICODE)
@@ -107,17 +115,20 @@ target_link_libraries(hemusic_core PUBLIC Boost::json PRIVATE rpcrt4 winhttp cry
 add_library(foo_hemusic SHARED
   src/component.cpp
   src/core/config.cpp
+  src/ui/d2d.cpp
+  src/ui/image_cache.cpp
+  src/ui/main_panel.cpp
   src/ui/pages/login_dlg.cpp)
 target_compile_features(foo_hemusic PRIVATE cxx_std_20)
-# UTF-8 source + execution charset so the dialog's Chinese literals (narrow for
-# console/popup, wide for Win32) encode correctly under MSVC.
-target_compile_options(foo_hemusic PRIVATE /utf-8)
+# /utf-8 is applied globally above (add_compile_options); the dialog's Chinese
+# literals (narrow for console/popup, wide for Win32) ride on that.
 
 target_link_libraries(foo_hemusic PRIVATE
   fb2k_sdk
   hemusic_core
   "${_fb2k_shared}"
-  shlwapi comctl32 uxtheme gdi32 user32 ole32 oleaut32 shell32 advapi32 comdlg32)
+  shlwapi comctl32 uxtheme gdi32 user32 ole32 oleaut32 shell32 advapi32 comdlg32
+  d2d1 dwrite windowscodecs)
 
 # foobar2000_get_interface lives in component_client (inside fb2k_sdk) and is
 # referenced by nothing in our code, so force-keep its export.
@@ -142,6 +153,8 @@ if(FOO_HEMUSIC_TESTS)
     tests/user_info_test.cpp
     tests/http_client_test.cpp
     tests/api_client_test.cpp
+    tests/session_test.cpp
+    tests/nav_test.cpp
     tests/song_model_test.cpp
     tests/list_models_test.cpp
     tests/artist_model_test.cpp
