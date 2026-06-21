@@ -288,4 +288,21 @@ inline std::vector<SongInfo> parseSongList(const boost::json::value& value,
     return out;
 }
 
+// `SongInfo.artist` getter: artist names joined by " / "; "-" when none.
+// (Artists already have their names trimmed and empty names dropped by
+// model_detail::artists.)
+inline std::string songArtistText(const SongInfo& s) {
+    std::string out;
+    for (const auto& a : s.artists) {
+        if (a.name.empty()) {
+            continue;
+        }
+        if (!out.empty()) {
+            out += " / ";
+        }
+        out += a.name;
+    }
+    return out.empty() ? "-" : out;
+}
+
 }  // namespace hemusic

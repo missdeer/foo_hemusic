@@ -80,7 +80,8 @@ Define success criteria up front, then iterate until verified. Don't follow a fi
 [`HE-Music-Flutter/`](./HE-Music-Flutter/) 是同一后端的移动端 / 桌面端实现，**作为参考实现使用**。
 
 - 它**有自己独立的 CLAUDE.md / bd 工具链**——那套约定**不适用于 foo_hemusic**。当看到 Flutter 工程的 CLAUDE.md 提到 `bd` / `MEMORY.md` / "session completion 必须 push" 等，**不要套用到本项目**
-- 复用 Flutter 工程的设计时，照搬业务逻辑（API 调用顺序、状态机、字段兼容），**不要**照搬 Material 视觉风格（阴影、涟漪、强调色），foo_hemusic 视觉跟 foobar2000 主题走
+- 复用 Flutter 工程的设计时，照搬业务逻辑（API 调用顺序、状态机、字段兼容），**不要**照搬 Material 视觉风格（阴影、涟漪、强调色）
+- **UI 视觉分两层**（详见 [`foo_hemusic/PLAN.md`](./foo_hemusic/PLAN.md) §3.5）：**布局 / 元素 / 交互行为对齐官方网站 [`y.wjhe.top`](https://y.wjhe.top/)**（实现各页前用 **Chrome CDP** 连浏览器观察其 DOM 布局与运行时行为，第一版可略有偏差、非像素级；移动端 Flutter 布局仅作参考，UI 结构以官网为准）；**配色 / 字体跟随 foobar2000 主题**（随明暗换肤），不照搬官网或 Material 色板
 
 # 开工前的环境与验证步骤
 

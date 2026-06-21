@@ -1,6 +1,7 @@
 #pragma once
 
 #include <charconv>
+#include <initializer_list>
 #include <string>
 #include <string_view>
 
@@ -70,6 +71,19 @@ inline long long toI64(const boost::json::value& v) {
 inline std::string str(const boost::json::object& obj, std::string_view key) {
     const auto* p = obj.if_contains(key);
     return p ? toStr(*p) : std::string{};
+}
+
+// First non-empty trimmed string among the given keys; "" if none match.
+// Mirrors the Flutter detail clients' `for (key in keys) { ... isNotEmpty }`.
+inline std::string firstNonEmpty(const boost::json::object& obj,
+                                 std::initializer_list<const char*> keys) {
+    for (const char* k : keys) {
+        std::string v = str(obj, k);
+        if (!v.empty()) {
+            return v;
+        }
+    }
+    return {};
 }
 
 // int64 value at key; 0 when absent.

@@ -1,6 +1,6 @@
 # foo_hemusic 开发计划
 
-foobar2000 组件 (component)，把 HE-Music 后端做成"接入式音乐源"。UI 风格对齐 [HE-Music-Flutter](../HE-Music-Flutter/)，鉴权走 Linux.do，播放时即时解析直链。
+foobar2000 组件 (component)，把 HE-Music 后端做成"接入式音乐源"。UI 布局对齐官方网站 [`y.wjhe.top`](https://y.wjhe.top/)（用 Chrome CDP 观察，见 §3.5），配色跟 fb2k 主题；鉴权走 Linux.do，播放时即时解析直链。
 
 > 参考实现：[`../HE-Music-Flutter/api.md`](../HE-Music-Flutter/api.md)（接口契约，PLAN 中所有 `/v1/...` 路径默认指此文档）
 > SDK：[`../foobar2000-SDK-2025-03-07/`](../foobar2000-SDK-2025-03-07/)（2025‑03‑07 版，foobar2000 v2 兼容）
@@ -47,7 +47,7 @@ foobar2000 组件 (component)，把 HE-Music 后端做成"接入式音乐源"。
 | 构建 | MSVC 2022 + CMake | SDK 自带 `.sln`，但 CMake 更利于多目标；保留 SDK 原 sln 作为子项目 |
 | 架构 | 32 + 64 位双构建 | foobar2000 v2 起 64 位为主，但用户基数仍含 32 位 |
 | UI 宿主 | **foobar2000 原生 ui_element** | 与 fb2k 主程序风格融合，无运行时依赖 |
-| UI 实现 | **Direct2D + DirectWrite 自绘** + 必要处用 Win32 控件（输入框、按钮） | 列表/卡片自绘，主题对齐 fb2k 当前色系；视觉对齐 HE-Music 仅在配色 / 排版上贴齐 |
+| UI 实现 | **Direct2D + DirectWrite 自绘** + 必要处用 Win32 控件（输入框、按钮） | 列表/卡片自绘；**布局 / 元素 / 行为基本对齐官网 `y.wjhe.top`**（Chrome CDP 观察），配色 / 字体跟随 fb2k 主题（见 §3.5） |
 | 列表组件 | SDK 自带的 `libPPUI` 提供的 `CListControl` / `CListControlOwnerData` | 已有虚拟滚动、双缓冲、皮肤适配，省一大块基建 |
 | HTTP | **WinHTTP** | SDK `http_client` 功能不够；所有带 token 的请求统一走 WinHTTP |
 | JSON | **Boost.JSON**（vcpkg `boost-json`） | 分离编译，编译开销小于 nlohmann 单头；`if_contains` 适配 Flutter 多候选 key 别名兼容 |
@@ -56,7 +56,7 @@ foobar2000 组件 (component)，把 HE-Music 后端做成"接入式音乐源"。
 | OAuth 回调 | **无需本地服务器**，HE-Music 后端接收回调，客户端轮询 `/v1/auth/status` | Flutter 已验证可行 |
 | 单元测试 | Catch2 | 与 SDK 解耦的纯业务层（API client / URL resolver） |
 
-> UI 宿主已确定走 foobar2000 原生 ui_element，不引入 WebView2 / Sciter / CEF。视觉上"对齐 HE-Music-Flutter"理解为：用 fb2k 当前主题色系 + HE-Music 的内容结构（卡片、列表分区、入列按钮位置），不追求像素级复刻 Flutter Material 风格。
+> UI 宿主已确定走 foobar2000 原生 ui_element，不引入 WebView2 / Sciter / CEF。视觉策略分两层（详见 §3.5）：**布局 / 元素 / 交互行为基本对齐官方网站 `y.wjhe.top`**（实现前用 Chrome CDP 观察其 DOM 与运行时行为，第一版可略有偏差、不追求像素级）；**配色 / 字体跟随 fb2k 当前主题**（随明暗换肤），不照搬官网或 Material 色板。
 
 ---
 
@@ -131,17 +131,18 @@ hemusic://song?id=<songId>&platform=<platform>&hint_title=<urlencoded>&hint_arti
 - 封面：实现 `album_art_extractor` 服务，URL 拼自 api.md §7.5；token 必须带 query，**注意此路径不走 Dio 拦截器，等价于裸 URL**
 - 解决并发：`/v1/song/detail` 不必每首歌都打，列表入列时如果手里已有完整 `SongInfo`，就把它编进 hint 参数
 
-### 3.5 UI 主题与视觉对齐
+### 3.5 UI 视觉对齐与主题
 
-foobar2000 主程序有用户可切换的明暗主题，组件 UI **必须跟随**，否则会出现"亮色窗口里嵌一块暗色面板"的尴尬。
+UI 分两层取舍——**结构层对齐官网、表现层跟随 fb2k 主题**：
 
+**① 布局 / 元素 / 交互行为：与官方网站 [`https://y.wjhe.top/`](https://y.wjhe.top/) 基本对齐**（HE-Music 的 Electron+Vue3 官方端）。页面结构、控件排布、信息层级、交互行为（hover / 点击 / 翻页 / 入列）要照官网。第一版**不追求像素级**复刻，可接受略有偏差。**实现各页前用 Chrome CDP 连到浏览器实地观察 `y.wjhe.top` 的 DOM 布局、元素层级与运行时行为**（而非凭截图臆测），各页对应关系见 §5。Flutter 工程仍作 API 调用 / 字段兼容的最终事实源，但**UI 布局以官网为准**（移动端 Flutter 与桌面网页布局不同）。
+
+**② 配色 / 字体：跟随 foobar2000 主题，不照搬官网色板。** 组件必须跟随 fb2k 用户可切换的明暗主题，否则会出现"亮色窗口里嵌一块暗色面板"的尴尬：
 - 颜色：通过 SDK 的 `colours_api`（v2 中名为 `cui::colours::manager_instance_v3` 或 DUI 侧 `ui_config_manager`）获取当前主题前景 / 背景 / 选中色
 - 字体：通过 `font_manager_v2` 拿主题字体，列表 / 标题用不同 size
-- HE-Music 视觉特征只在以下三处保留：
-  - 卡片化布局（封面在左，文字在右，圆角 6px）
-  - 列表分区标题（"为你推荐"、"新歌速递"等）
-  - 入列按钮位置（每行右侧悬停显示）
-- 不引入 Material design 阴影 / 涟漪动画 / 粗体强调色——这些会跟 fb2k 风格冲突
+- 不引入 Material / 网页端的阴影 / 涟漪动画 / 粗体强调色——这些会跟 fb2k 风格冲突
+
+> 一句话：**官网决定"长什么样的结构与行为"，fb2k 主题决定"用什么颜色字体来画"**。原先"只保留卡片化布局 / 分区标题 / 入列按钮三处弱特征"已升级为"布局 / 元素 / 行为基本对齐官网"。
 
 ---
 
@@ -265,7 +266,14 @@ foo_hemusic/
   - [x] **`PlaylistInfo` + `AlbumInfo` 共享模型** `src/api/playlist.h` / `src/api/album.h`（header-only）：移植 Flutter `PlaylistInfo`/`CategoryInfo`/`AlbumInfo`。两者是发现页"精选歌单/新专"、搜索、歌单广场、专辑/歌手详情、"我的"共用的集合卡片。复用 song.h 的 `model_detail::` 辅助（**`song_detail` 已重命名 `model_detail`**，因 cover/artists/links/countText/bool 等已被多模型共用，非 song 专属）；新增 `countText`（负数/null/不可解析→"0"，是展示字符串故绝不出负号）、`boolean`（真 bool 透传，否则 "true"/"1"）、`countTextCoalesce`。`PlaylistInfo`：song_count/play_count 容 camelCase 别名、`is_default` 走 Flutter `_int==1 || _bool` 双判定、`categories` 列表（空名丢弃、平台不透传——对齐 Flutter `CategoryInfo.fromMap` 不收 fallback）。`AlbumInfo`：artists 容 `artist` 别名、publish_time/play_count camelCase 别名、type(int)、is_finished(bool)。**关键契约（实读 `home_discover_api_client.dart` 校正）**：discover 的 `_parseList` 对 playlist/album/mv **不做 id/name 过滤**（只有 `_songs`/`_radios` 这类 model 内置 helper 过滤），故**不提供** `parsePlaylistList`/`parseAlbumList`（避免无调用方 + 避免发明 Flutter 没有的过滤）；list 映射留给 endpoint 层按需做。**另一关键点**：父对象自身的 `platform` 字段**不**透传给子 `songs`，只有 `fallbackPlatform` **入参**透传（Flutter `_songs(raw['songs'], fallbackPlatform)`）——真实 discover 流恒以 `fromMap(item, fallbackPlatform: platformId)` 调用。15 个 Catch2 用例（`tests/list_models_test.cpp`，全绿）：playlist 全字段+categories/count camelCase+负数夹 0/is_default 四真三假/platform 回退；album 全字段+artist 别名/camelCase 别名/platform 回退
   - [x] **`MvInfo` 模型 + `/v1/page/discover` 页面解析** `src/api/mv.h` / `src/api/discover.h`（header-only）：`MvInfo` 移植 Flutter（links/cover/play_count camelCase 别名/type/duration/platform 回退）。`parseDiscoverPage(body, platformId)` → `DiscoverPage{newSongs, newAlbums, featuredPlaylists, featuredMvs}`，对齐 `home_discover_api_client.dart` 的四段 `new_songs`/`new_albums`/`featured_playlists`/`featured_mvs`，每段以选中 platformId 作为 item 的 fallback。**忠实复刻契约（统一走 `mapAll<T>` 模板 + 函数指针 `parseSongInfo`/`parseAlbumInfo`/`parsePlaylistInfo`/`parseMvInfo`）**：① **四段全部不过滤**——顶层 section 都按对象逐个映射、不丢 id/name 空者（= 数据源 `_parseList`）；id/name `where` 过滤**只存在于** Playlist/Album **内嵌**的 `_songs`，**不**上浮到顶层，故 `new_songs` 同样不过滤。（初版误用带过滤的 `parseSongList` 解析 `new_songs`,经 /review 第 1 轮 Codex+Antigravity 同时指出后改为 `mapAll(parseSongInfo)`。）② **非 object 数组项跳过**（Flutter `_asMap` 遇非 map 抛异常；纯解析器不抛,跳过而非产出空壳条目）；③ **刻意宽容 divergence**：Flutter `_parseList` 对缺失/非数组段会 **throw AppException**,纯解析器不抛——缺失/非数组段降级为空 vector（音乐浏览器渲染空/部分页比崩溃体面,调用方仍可判全空）。9 个 Catch2 用例（`tests/discover_test.cpp`,全绿）：MvInfo 全字段+thumb/playCount 别名+platform 回退；discover 四段全解析+fallback 透传；**四段均保留全部对象项不过滤**；**非对象项跳过不留空壳**；缺段/非数组降级空。**HTTP 接线**（GET `?platform=`，经 `ApiClient::send`）留给 Phase 4 UI（UI 负责平台选择 + `/v1/platforms`）
   - [x] **`PlatformInfo` 模型 + `/v1/platforms` 列表解析** `src/api/platforms.h`（header-only）：移植 Flutter `features/home/domain/entities/home_platform.dart` 的 **`HomePlatform`**（精简版：id/name/shortName/status/featureSupportFlag + `available()`/`supports()`），而非 `online_platform.dart` 的 `OnlinePlatform`——**按 Flutter 源码自身的分层取舍**：home/discover feature 用精简模型，`imageSizes`/`qualities` 只在 search/detail 的 `OnlinePlatform` 出现，留给其 Phase 5 消费方补，不提前铺。这是发现/排行/搜索顶部**平台选择 Tab** + 各 endpoint **按平台能力 gating** 的数据源。忠实复刻：`id`/`name` trim；`shortName` 取 `shortname` trim，空则回退 `name`；`status` 容字符串数字（`available()`=status==1）；`feature_support_flag` 是位掩码故用 `unsigned long long`（已定义能力位最高 1<<47，uint64 容得下），数字/数字串/否则 0，**负数夹 0**（`platform_detail::featureFlag` 本地解析，因 `json::toI64` 是有符号、语义不符）。`parsePlatformList` 解 `{"list":[...]}` 信封，**丢 id 或 name 为空的项**（Flutter `fromMap` 对其 throw，纯解析器降级跳过=对齐 `parseSongList` 立场），缺/非数组 `list` → 空 vector。9 个 Catch2 用例（`tests/platforms_test.cpp`，全绿）：全字段解析+supports 掩码/shortName 回退(缺·空白)/status·flag 字符串数字容错/flag 垃圾·负数夹 0/**1<<47 高位不丢**/status 缺失默认不可用/list 信封丢无效项(空id·空name·非对象)/缺·非数组 list 降级空。**HTTP 接线**（GET，经 `ApiClient::send`）留给 Phase 4 UI（平台选择）
-  - [ ] 其余 endpoint 的 typed client（search、playlist 详情、album 详情、artist、ranking、radio...）随 Phase 4/5 UI 逐个补，统一经 `ApiClient::send` 走刷新拦截
+  - [x] **`ArtistInfo` 共享模型** `src/api/artist.h`（header-only）：移植 Flutter `shared/models/he_music_models.dart` 的 `ArtistInfo`（id/name/cover/platform/description/mvCount/songCount/albumCount/alias，全 String，count 类为展示文本）。这是搜索 artist 结果 + 歌手详情页（Phase 5 #6 标题 + 歌曲/专辑/MV Tab）共用的实体。复用 song.h 的 `model_detail::`（cover/countText/countTextCoalesce/coalesce）。**关键契约**：① `mv_count ?? mvCount ?? video_count` 三键 `??` 链——`coalesce(o,"mv_count","mvCount")` 后若结果 nullptr/`is_null` 再退 `video_count`，忠实复刻 present-but-null 继续下传（不停在 null）；song_count/album_count 走既有双键 `countTextCoalesce`；count 负数/垃圾夹 "0"（展示串绝不出负号）。② platform 空回退 `fallbackPlatform`，非对象输入产出全空 ArtistInfo（platform 仍取 fallback）。**与 album.h/playlist.h 一致：只提供单项 `parseArtistInfo`,不提供 list parser**——Flutter 顶层无带过滤的 ArtistInfo list helper（`_artists` 是 song 子艺人 `SongInfoArtistInfo`,类型不同）,list 映射留给 search endpoint 层。7 个 Catch2 用例（`tests/artist_model_test.cpp`,全绿）：全字段解析/mvCount 三键链(优先级·present-null 继续下传·全缺→"0")/count camelCase 别名+负数·垃圾夹 0/cover 别名优先级/platform 回退(缺·present 覆盖)/非对象→全空。**HTTP 接线**(GET，经 `ApiClient::send`)随 search/artist endpoint typed client 补
+  - [x] **endpoint 响应解析层（纯逻辑，HTTP 接线留给 UI）**：按 discover.h 立场——api/ header-only 纯解析器，`{platform}` / `keyword` / `id`+`title` 等请求上下文作入参，**HTTP（GET 经 `ApiClient::send` 走刷新拦截）随 Phase 4/5 UI 接**。统一沿用既有宽容策略：Flutter `throw` 处降级为空 vector / 跳过非对象项；歌曲列表沿用 `parseSongList`「丢空 id/name 不可播条目」。已落地五块：
+    - [x] **Radio** `src/api/radio.h`：`RadioInfo`{name/id/cover/platform} + `RadioGroupInfo`{name/radios/platform}。`parseRadioInfo`/`parseRadioList`（`_radios` 过滤 id&name 空者）/`parseRadioGroupInfo`（子 radios 继承 group 解析后的 platform 作 fallback）/`parseRadioGroups`（`/v1/radios`→`{groups}`，缺/非数组降级空）/`parseRadioSongs`（`/v1/radio/songs`→`{list}`→`parseSongList`）。5 用例（`tests/radio_test.cpp`）
+    - [x] **Playlist 详情** `src/api/playlist_detail.h`：`/v1/playlist` meta + `/v1/playlist/songs`（两次调用，分开解析、UI 拼合）。`parsePlaylistDetailInfo(body,id,platform,title)`→`PlaylistInfo`（songs 留空）+ `parsePlaylistSongs(body,platform)`。**详情专属 count 语义**（区别于共享 `parsePlaylistInfo`）：song_count/play_count 保留原始裸串（缺失为 `""` 而非夹 "0"）、song_count 多 `trackCount` 别名、creator 空→`"-"`、name 空→回退请求 title、id/platform 取自请求。6 用例（`tests/playlist_detail_test.cpp`）
+    - [x] **Album 详情** `src/api/album_detail.h`：单接口 `/v1/album`（歌曲内嵌）。`parseAlbumDetailInfo(body,id,platform,title)`→`AlbumInfo`（含 songs）。`album_detail::resolveSongList` 复刻 `_resolveSongList`（songs/tracks/song_list/songlist + 嵌套 data/detail/album）；详情专属：artists **只读 `artists` 键**（无 `artist` 别名，区别于共享 `parseAlbumInfo`）、song_count 缺失回退**解析到的歌曲数**、publish_time 多 `createTime` 别名、play_count 裸串。7 用例（`tests/album_detail_test.cpp`）
+    - [x] **Ranking** `src/api/ranking.h`：`RankingPreviewSong`/`RankingInfo`/`RankingGroup`/`RankingDetail` 四模型。`/v1/rankings`→`parseRankingGroups`（`{groups}`，group 名空→UTF-8 字节 `"\xE6\xA6\x9C\xE5\x8D\x95"`=榜单，避开 tests 目标无 `/utf-8`）；`/v1/ranking`→`parseRankingDetail(body,platform,fallbackId)`（info+songs+hasMore/lastId/totalCount/description）。`parseRankingInfo` id 空→fallbackId→`"-"`、preview 取前 3 首（name + `songArtistText` 拼接 artist，各空→`"-"`）。`ranking_detail::readBoolKeys`/`readIntKeys` 复刻 `_readBool`/`_readInt`（int>0、numeric-string 全匹配、double/非数字串跳过）。**songs 用请求 platform 作 fallback（非 body 的榜单 platform）**，对齐 Flutter `_parseSongs(payload, platform)`。新增 `songArtistText(SongInfo)`=`SongInfo.artist` getter（names join `" / "`，空→`"-"`）入 song.h。6 用例（`tests/ranking_test.cpp`）
+    - [x] **Search** `src/api/search.h`：综合 `/v1/search`→`ComprehensiveSearchResult`{keyword + `bestMatch` + 5 段 `SearchSection<T>`{items/hasMore/totalCount}}；分类 `/v1/{type}/search`→`parse{Song,Playlist,Album,Artist,Video}Search`（`{list}` typed）。**段类型固定故 eager typing**（Flutter 存裸 map 懒解析，C++ 直接类型化，等价）；best_match 用 `std::variant<Song/Playlist/Album/Mv/Artist Info>` + resourceType（oneof nested `map[resourceType]`，primary 先 recommendations 后，unknown/空 data 丢弃）。`search_detail::sectionList` 复刻 `_extractList`（list/items/data + 一层嵌套）、`readBoolField`/`readIntField`（含 `data` 嵌套回退）。keyword 取 body `key`（present 含空串即用，对齐 `?? null`），缺失才回退请求 keyword。条目映射复用 `discover_detail::mapAll`（保留全部对象项不过滤，对齐 searchMusic 裸 list）。**段/best-match 用请求 platform 作 fallback**——刻意优于 Flutter `_safePlatform` 返回 `"-"`（仅喂展示串、对播放是无效 platform key）。6 用例（`tests/search_test.cpp`）
+  - [ ] 其余 endpoint（comment、favourite、user_playlist、mv/url、lyric、captcha 等）随 Phase 4/5/6 UI 逐个补，统一经 `ApiClient::send` 走刷新拦截
 - [ ] `tests/api_client_test.cpp`：用 hurl / mock server 跑契约测试（已建文件,先覆盖刷新拦截器 + SongInfo/PlaylistInfo/AlbumInfo 模型；endpoint 级 GET 契约随 typed client 逐个补）
 
 **交付**：单元测试覆盖 §5~14 的主要 GET 接口。
@@ -284,6 +292,8 @@ foo_hemusic/
 **交付**：在 foobar2000 里手动粘一条 `hemusic://` URL，能播完整首歌且封面正确。
 
 ### Phase 4 — UI 基础设施（4~5 天）
+
+> **开工前**：用 Chrome CDP 连到浏览器打开 [`y.wjhe.top`](https://y.wjhe.top/)，观察发现页的 DOM 布局、分区结构、卡片/列表尺寸比例与交互行为，作为 `discover_page` 及后续各页的布局基准（见 §3.5）。配色仍跟 fb2k 主题，不取官网色板。
 
 - [ ] 注册 Default UI 的 `ui_element_v2`，单个 GUID 作为主面板（用户可在 fb2k layout editor 拖出来）
 - [ ] `theme`：从 fb2k 拿主题色 / 字体，组装 HE-Music 视觉常量（圆角、间距、卡片尺寸）
@@ -307,7 +317,7 @@ foo_hemusic/
 7. **排行榜 / 电台 / 歌单广场**（共用卡片网格组件）
 8. **"我的" Tab**：收藏（4 类）+ 自建歌单（CRUD）
 
-视觉对齐：参考 [`../HE-Music-Flutter/lib/features/`](../HE-Music-Flutter/lib/features/) 各 feature 的 `presentation/pages` 抓**布局 / 信息层级**，颜色字体跟 fb2k 走。**不**复刻 Material 阴影、涟漪、粗体强调色。
+视觉对齐：**每页实现前用 Chrome CDP 观察官网 [`y.wjhe.top`](https://y.wjhe.top/) 对应页面的布局 / 元素 / 交互行为作为基准**（结构以官网为准，移动端 Flutter 布局仅作参考）；Flutter 工程 [`../HE-Music-Flutter/lib/features/`](../HE-Music-Flutter/lib/features/) 的 `presentation/pages` 用来对照**信息层级与字段映射**。颜色字体跟 fb2k 主题走，**不**照搬官网色板，也**不**复刻 Material / 网页端阴影、涟漪、粗体强调色。
 
 **交付**：登录后，能从 UI 里把任意歌单/专辑加进 foobar2000 播放列表并播放。
 

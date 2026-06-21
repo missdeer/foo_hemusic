@@ -144,6 +144,12 @@ if(FOO_HEMUSIC_TESTS)
     tests/api_client_test.cpp
     tests/song_model_test.cpp
     tests/list_models_test.cpp
+    tests/artist_model_test.cpp
+    tests/radio_test.cpp
+    tests/playlist_detail_test.cpp
+    tests/album_detail_test.cpp
+    tests/ranking_test.cpp
+    tests/search_test.cpp
     tests/discover_test.cpp
     tests/platforms_test.cpp
     tests/url_codec_test.cpp
