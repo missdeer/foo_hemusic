@@ -7,6 +7,7 @@
 
 #include "auth/device_info.h"
 #include "net/http_client.h"
+#include "net/url_codec.h"
 
 using hemusic::AuthStatus;
 using hemusic::buildAuthUrl;
@@ -17,8 +18,8 @@ using hemusic::LoginCallbacks;
 using hemusic::LoginOutcome;
 using hemusic::LoginPhase;
 using hemusic::makeDeviceInfo;
-using hemusic::percentEncode;
 using hemusic::runLogin;
+using hemusic::url::percentEncode;
 
 namespace {
 

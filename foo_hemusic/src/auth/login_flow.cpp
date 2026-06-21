@@ -9,6 +9,7 @@
 #include <boost/system/error_code.hpp>
 
 #include "net/json_codec.h"
+#include "net/url_codec.h"
 
 namespace hemusic {
 
@@ -17,8 +18,6 @@ namespace {
 constexpr int kDefaultPollSeconds = 2;  // Flutter fallback when interval <= 0
 constexpr long kHttpOkMin = 200;
 constexpr long kHttpOkMax = 300;  // exclusive upper bound (2xx)
-constexpr unsigned kNibbleMask = 0x0F;
-constexpr int kNibbleShift = 4;
 
 // Parses a response body into a JSON value; non-JSON / empty -> null value so
 // the lenient json:: helpers degrade to defaults instead of throwing.
@@ -211,43 +210,10 @@ LoginResult pollUntilTerminal(std::string_view baseUrl,
 
 }  // namespace
 
-std::string percentEncode(std::string_view value) {
-    static constexpr std::string_view kHex = "0123456789ABCDEF";
-    std::string out;
-    out.reserve(value.size());
-    for (unsigned char c : value) {
-        const bool unreserved = (c >= 'A' && c <= 'Z') ||
-                                (c >= 'a' && c <= 'z') ||
-                                (c >= '0' && c <= '9') || c == '-' ||
-                                c == '_' || c == '.' || c == '~';
-        if (unreserved) {
-            out.push_back(static_cast<char>(c));
-        } else {
-            out.push_back('%');
-            out.push_back(kHex.at(c >> kNibbleShift));
-            out.push_back(kHex.at(c & kNibbleMask));
-        }
-    }
-    return out;
-}
-
 std::string buildAuthUrl(
     std::string_view baseUrl, std::string_view path,
     const std::vector<std::pair<std::string, std::string>>& query) {
-    while (!baseUrl.empty() && baseUrl.back() == '/') {
-        baseUrl.remove_suffix(1);
-    }
-    std::string url(baseUrl);
-    url.append(path);
-    char sep = '?';
-    for (const auto& [key, val] : query) {
-        url.push_back(sep);
-        url.append(percentEncode(key));
-        url.push_back('=');
-        url.append(percentEncode(val));
-        sep = '&';
-    }
-    return url;
+    return url::buildUrl(baseUrl, path, query);
 }
 
 LoginResult runLogin(std::string_view baseUrl, const std::string& provider,

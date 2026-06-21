@@ -96,7 +96,8 @@ add_library(hemusic_core STATIC
   src/auth/login_flow.cpp
   src/auth/token_store.cpp
   src/net/http_client.cpp
-  src/net/api_client.cpp)
+  src/net/api_client.cpp
+  src/playback/url_resolver.cpp)
 target_include_directories(hemusic_core PUBLIC src)
 target_compile_features(hemusic_core PUBLIC cxx_std_20)
 target_compile_definitions(hemusic_core PUBLIC UNICODE _UNICODE)
@@ -143,7 +144,11 @@ if(FOO_HEMUSIC_TESTS)
     tests/api_client_test.cpp
     tests/song_model_test.cpp
     tests/list_models_test.cpp
-    tests/discover_test.cpp)
+    tests/discover_test.cpp
+    tests/platforms_test.cpp
+    tests/url_codec_test.cpp
+    tests/hemusic_url_test.cpp
+    tests/url_resolver_test.cpp)
   target_link_libraries(hemusic_tests PRIVATE hemusic_core Catch2::Catch2WithMain)
   add_test(NAME hemusic_tests COMMAND hemusic_tests)
 endif()

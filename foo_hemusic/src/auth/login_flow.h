@@ -71,14 +71,11 @@ struct LoginCallbacks {
     ProgressFn onProgress;  // optional; may be empty
 };
 
-// Joins baseUrl (trailing '/' trimmed) + path + percent-encoded query. Exposed
-// for unit testing the URL/query assembly.
+// Joins baseUrl (trailing '/' trimmed) + path + percent-encoded query (via
+// net/url_codec). Exposed for unit testing the URL/query assembly.
 std::string buildAuthUrl(
     std::string_view baseUrl, std::string_view path,
     const std::vector<std::pair<std::string, std::string>>& query = {});
-
-// Percent-encodes a query-component value (RFC 3986 unreserved kept verbatim).
-std::string percentEncode(std::string_view value);
 
 // Runs the full login flow. provider is "linuxdo"; redirectUri is normally ""
 // (the backend uses its configured default callback). Blocks until a terminal
