@@ -31,18 +31,6 @@
           }
         ]
       }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/clang-tidy-stop.sh\"",
-            "timeout": 300,
-            "statusMessage": "Batch clang-tidy on modified foo_hemusic sources"
-          }
-        ]
-      }
     ]
   }
 }
