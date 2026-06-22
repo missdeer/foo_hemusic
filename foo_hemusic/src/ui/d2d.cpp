@@ -14,7 +14,44 @@ namespace {
 // (linker-resolved).
 const GUID& kWicTargetFormat = GUID_WICPixelFormat32bppPBGRA;
 
+constexpr UINT kBaseDpi = 96;
+
 }  // namespace
+
+UINT dpiForWindow(HWND hwnd) {
+    // GetDpiForWindow ships in Win10 1607+; resolve it dynamically so the
+    // component still loads on Win7/8. user32 is always mapped in our process.
+    using GetDpiForWindowFn = UINT(WINAPI*)(HWND);
+    static const GetDpiForWindowFn getDpiForWindow = [] {
+        HMODULE user32 = GetModuleHandleW(L"user32.dll");
+        return user32 == nullptr
+                   ? nullptr
+                   : reinterpret_cast<GetDpiForWindowFn>(
+                         GetProcAddress(user32, "GetDpiForWindow"));
+    }();
+    if (getDpiForWindow != nullptr && hwnd != nullptr) {
+        const UINT dpi = getDpiForWindow(hwnd);
+        if (dpi != 0) {
+            return dpi;
+        }
+    }
+    // Fallback: system DPI (equivalent to GetDpiForWindow on a system-aware
+    // process, and the only thing available on older Windows / a null window).
+    HDC hdc = GetDC(nullptr);
+    if (hdc != nullptr) {
+        const int dpi = GetDeviceCaps(hdc, LOGPIXELSX);
+        ReleaseDC(nullptr, hdc);
+        if (dpi > 0) {
+            return static_cast<UINT>(dpi);
+        }
+    }
+    return kBaseDpi;
+}
+
+float dpiScaleForWindow(HWND hwnd) {
+    return static_cast<float>(dpiForWindow(hwnd)) /
+           static_cast<float>(kBaseDpi);
+}
 
 ID2D1Factory* factory() {
     static ComPtr<ID2D1Factory> g = [] {
@@ -54,12 +91,20 @@ IWICImagingFactory* wicFactory() {
 HwndCanvas::HwndCanvas(HWND hwnd) : m_hwnd(hwnd) {}
 
 bool HwndCanvas::ensureTarget() {
-    if (m_target) {
-        return true;
-    }
     ID2D1Factory* f = factory();
     if (f == nullptr || m_hwnd == nullptr) {
         return false;
+    }
+    const UINT dpi = dpiForWindow(m_hwnd);
+    if (m_target && dpi != m_dpi) {
+        // Window moved to a monitor with a different DPI (PMv2 host). Drop the
+        // old target so it is rebuilt below at the new scale -- otherwise its
+        // DIP<->pixel mapping would be stale and content would draw
+        // wrong-sized.
+        m_target.Reset();
+    }
+    if (m_target) {
+        return true;
     }
     RECT rc{};
     if (GetClientRect(m_hwnd, &rc) == 0) {
@@ -70,11 +115,20 @@ bool HwndCanvas::ensureTarget() {
     if (w == 0 || h == 0) {
         return false;
     }
-    auto props = D2D1::RenderTargetProperties();
+    // Bind the target's DPI to the window's DPI so GetSize() reports DIPs at
+    // this monitor's scale and D2D maps drawing to physical pixels crisply.
+    // SizeU stays in physical pixels (the GetClientRect result).
+    auto props = D2D1::RenderTargetProperties(
+        D2D1_RENDER_TARGET_TYPE_DEFAULT, D2D1::PixelFormat(),
+        static_cast<float>(dpi), static_cast<float>(dpi));
     auto hwndProps = D2D1::HwndRenderTargetProperties(
         m_hwnd, D2D1::SizeU(w, h), D2D1_PRESENT_OPTIONS_NONE);
-    return SUCCEEDED(
-        f->CreateHwndRenderTarget(props, hwndProps, m_target.GetAddressOf()));
+    if (FAILED(f->CreateHwndRenderTarget(props, hwndProps,
+                                         m_target.GetAddressOf()))) {
+        return false;
+    }
+    m_dpi = dpi;
+    return true;
 }
 
 void HwndCanvas::paint(

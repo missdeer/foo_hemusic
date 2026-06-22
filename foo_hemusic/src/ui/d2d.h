@@ -28,6 +28,14 @@ ID2D1Factory* factory();
 IDWriteFactory* dwriteFactory();
 IWICImagingFactory* wicFactory();
 
+// Per-window DPI, honoring whatever DPI-awareness level the host process is
+// running at (the component is a DLL loaded by fb2k and cannot change process
+// awareness). Resolves GetDpiForWindow dynamically (Win10 1607+); on older
+// Windows or when the window is null, falls back to the system DPI via
+// GetDeviceCaps, then to 96. dpiScaleForWindow is just dpiForWindow / 96.
+UINT dpiForWindow(HWND hwnd);
+float dpiScaleForWindow(HWND hwnd);
+
 // Render target bound to a single HWND. Created lazily inside paint() so the
 // HWND already has its client size. Releases the target on WM_DESTROY (via
 // discard()) and on D2DERR_RECREATE_TARGET (transparently inside paint()).
@@ -56,6 +64,12 @@ class HwndCanvas {
 
     HWND m_hwnd;
     Microsoft::WRL::ComPtr<ID2D1HwndRenderTarget> m_target;
+    // DPI the current target was created with (only meaningful while m_target
+    // is live; stale after discard/device-loss reset until the next create).
+    // When the window's DPI differs from it (monitor move under a PMv2 host),
+    // the target is rebuilt so its DIPs map to physical pixels at the new
+    // scale.
+    UINT m_dpi = 0;
 };
 
 // Decode an encoded image (PNG/JPG/etc.) into a 32bpp BGRA premultiplied

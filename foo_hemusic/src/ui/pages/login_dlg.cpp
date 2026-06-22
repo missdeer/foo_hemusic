@@ -75,10 +75,10 @@ constexpr long kHttpOkMax = 300;          // exclusive (2xx)
 constexpr DWORD kMillisPerSecond = 1000;  // WaitForSingleObject unit
 constexpr INT_PTR kShellExecOk = 32;      // ShellExecuteW success is > 32
 
-// Layout in device-independent pixels (the render target uses desktop DPI, so
-// rt->GetSize() returns these DIPs regardless of the physical pixel size we
-// create the window at). Hit-testing converts mouse pixels back to DIPs via the
-// captured DPI scale.
+// Layout in device-independent pixels (the render target binds to the window's
+// per-monitor DPI via d2d::HwndCanvas, so rt->GetSize() returns these DIPs
+// regardless of the physical pixel size we create the window at). Hit-testing
+// converts mouse pixels back to DIPs via the captured DPI scale.
 constexpr float kDlgW = 360.0F;
 constexpr float kDlgH = 212.0F;
 constexpr float kTitleY = 18.0F;
@@ -573,6 +573,18 @@ LRESULT CALLBACK loginWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 ui->canvas->resize(LOWORD(lp), HIWORD(lp));
             }
             return 0;
+        case WM_DPICHANGED: {
+            // Monitor changed under a PMv2 host. lParam carries the suggested
+            // rect (new physical size preserving our DIP logical size); honor
+            // it so the window stays crisp, refresh the hit-test scale, and let
+            // the canvas rebuild its target at the new DPI on the next paint.
+            const auto* r = reinterpret_cast<const RECT*>(lp);
+            SetWindowPos(hwnd, nullptr, r->left, r->top, r->right - r->left,
+                         r->bottom - r->top, SWP_NOZORDER | SWP_NOACTIVATE);
+            ui->dpiScale = static_cast<float>(LOWORD(wp)) / kBaseDpi;
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
         case WM_TIMER:
             if (wp == kRingTimerId) {
                 advanceRing(ui);
@@ -638,14 +650,42 @@ bool ensureWindowClass() {
     return true;
 }
 
-float queryDpiScale() {
-    HDC hdc = GetDC(nullptr);
-    if (hdc == nullptr) {
-        return 1.0F;
+constexpr DWORD kDlgStyle = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU;
+
+// Expands a client RECT to include the non-client frame at the given DPI. Uses
+// AdjustWindowRectExForDpi (Win10 1607+, scales the frame per-monitor) when
+// available so the client area exactly matches the requested DIP canvas;
+// otherwise falls back to the system-metric AdjustWindowRectEx.
+void adjustWindowRectForDpi(RECT* rc, UINT dpi) {
+    using Fn = BOOL(WINAPI*)(LPRECT, DWORD, BOOL, DWORD, UINT);
+    static const Fn forDpi = [] {
+        HMODULE user32 = GetModuleHandleW(L"user32.dll");
+        return user32 == nullptr ? nullptr
+                                 : reinterpret_cast<Fn>(GetProcAddress(
+                                       user32, "AdjustWindowRectExForDpi"));
+    }();
+    if (forDpi != nullptr) {
+        forDpi(rc, kDlgStyle, FALSE, WS_EX_DLGMODALFRAME, dpi);
+    } else {
+        AdjustWindowRectEx(rc, kDlgStyle, FALSE, WS_EX_DLGMODALFRAME);
     }
-    const int dpi = GetDeviceCaps(hdc, LOGPIXELSX);
-    ReleaseDC(nullptr, hdc);
-    return dpi > 0 ? static_cast<float>(dpi) / kBaseDpi : 1.0F;
+}
+
+// Outer window size whose client area is the kDlgW x kDlgH DIP canvas at the
+// given window DPI (the D2D render target measures the client area via
+// GetClientRect, so this keeps the drawn canvas exactly kDlgW x kDlgH DIPs).
+SIZE windowSizeForDpi(UINT dpi) {
+    const float scale = static_cast<float>(dpi) / kBaseDpi;
+    RECT want{0, 0, static_cast<int>(kDlgW * scale),
+              static_cast<int>(kDlgH * scale)};
+    adjustWindowRectForDpi(&want, dpi);
+    return SIZE{want.right - want.left, want.bottom - want.top};
+}
+
+void resizeForDpi(HWND hwnd, UINT dpi) {
+    const SIZE sz = windowSizeForDpi(dpi);
+    SetWindowPos(hwnd, nullptr, 0, 0, sz.cx, sz.cy,
+                 SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
 void centerOnOwner(HWND hwnd, HWND owner) {
@@ -688,25 +728,16 @@ void showLoginDialog() {
     ui->baseUrl = config::apiBaseUrl();
     ui->device =
         makeDeviceInfo(config::deviceId(), queryComputerName(), kAppVersion);
-    ui->dpiScale = queryDpiScale();
-
-    // The window is sized in physical pixels = DIP layout * DPI scale, so the
-    // D2D render target (desktop DPI) reports our DIP layout via GetSize().
-    const int pxW = static_cast<int>(kDlgW * ui->dpiScale);
-    const int pxH = static_cast<int>(kDlgH * ui->dpiScale);
 
     HINSTANCE inst = core_api::get_my_instance();
     auto* owner = reinterpret_cast<HWND>(core_api::get_main_window());
-    // CreateWindow size includes the non-client frame; expand so the client
-    // area matches our intended DIP canvas.
-    RECT want{0, 0, pxW, pxH};
-    AdjustWindowRectEx(&want, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU, FALSE,
-                       WS_EX_DLGMODALFRAME);
-    HWND hwnd =
-        CreateWindowExW(WS_EX_DLGMODALFRAME, kWindowClass, L"HE-Music 登录",
-                        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU, CW_USEDEFAULT,
-                        CW_USEDEFAULT, want.right - want.left,
-                        want.bottom - want.top, owner, nullptr, inst, nullptr);
+    // First-pass size from the system DPI (we don't yet know which monitor the
+    // window lands on); corrected below to the window's actual per-monitor DPI.
+    const SIZE initial = windowSizeForDpi(d2d::dpiForWindow(nullptr));
+    HWND hwnd = CreateWindowExW(
+        WS_EX_DLGMODALFRAME, kWindowClass, L"HE-Music 登录",
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU, CW_USEDEFAULT, CW_USEDEFAULT,
+        initial.cx, initial.cy, owner, nullptr, inst, nullptr);
     if (hwnd == nullptr) {
         CloseHandle(ui->cancelEvent);
         console::print("HE-Music: 无法创建登录窗口");
@@ -719,6 +750,12 @@ void showLoginDialog() {
     SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(raw));
     g_active = raw;
 
+    // Resize to the window's real DPI (the render target binds to the same DPI
+    // via d2d, and hit-testing divides mouse pixels by this scale), then
+    // center.
+    const UINT dpi = d2d::dpiForWindow(hwnd);
+    raw->dpiScale = static_cast<float>(dpi) / kBaseDpi;
+    resizeForDpi(hwnd, dpi);
     centerOnOwner(hwnd, owner);
     ShowWindow(hwnd, SW_SHOW);
     UpdateWindow(hwnd);

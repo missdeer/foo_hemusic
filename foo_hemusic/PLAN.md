@@ -267,7 +267,7 @@ foo_hemusic/
 按优先级，每一页都需要：列表 / 卡片虚拟滚动、空态、加载态、错误态、入列按钮。
 
 1. ~~[HEMUSIC-12](https://jira.ismisv.com/browse/HEMUSIC-12) — **登录对话框**（替换临时 login_dlg；Linux.do 引导 + 等待授权 + 取消）~~ ✅ 已完成（表现层 D2D 化 + `themeFromHost()` 主题融合 + 旋转进度环 + 自绘取消按钮；线程模型不动），详见 [`DONE.md`](./DONE.md#phase-5--ui-业务页面)。
-   - [ ] [HEMUSIC-32](https://jira.ismisv.com/browse/HEMUSIC-32) — **UI 全局 per-monitor DPI (PMv2) 感知**（HEMUSIC-12 /review 拆出；进程级 PMv2 声明 + 把 per-window DPI 贯通共享 `HwndCanvas`，影响 main_panel/discover_page/login_dlg）
+   - ~~[HEMUSIC-32](https://jira.ismisv.com/browse/HEMUSIC-32) — **UI 全局 per-monitor DPI (PMv2) 感知**~~ ✅ 已完成（尊重宿主感知 + per-window DPI 贯通 `HwndCanvas` render target；不强行声明进程 PMv2——组件无法覆盖宿主锁定的感知级别），详见 [`DONE.md`](./DONE.md#phase-5--ui-业务页面)。
 2. ~~[HEMUSIC-13](https://jira.ismisv.com/browse/HEMUSIC-13) — **发现页** 完整 4 段（新歌 / 新专 / 精选歌单 / 精选 MV）~~ ✅ 已完成（4 段 + 网格布局 + 纵向滚动；封面占位框），详见 [`DONE.md`](./DONE.md#phase-5--ui-业务页面)。
    - ~~[HEMUSIC-31](https://jira.ismisv.com/browse/HEMUSIC-31) — **发现页封面异步加载**~~ ✅ 已完成（ImageCache 加固 + cover_cache initquit 单例 + paint 接线真实封面 + hemusic_ui_core 测试库），详见 [`DONE.md`](./DONE.md#phase-5--ui-业务页面)。
 3. [HEMUSIC-14](https://jira.ismisv.com/browse/HEMUSIC-14) — **搜索**（顶栏输入 + 联想浮层 + 综合 / 分类 Tab）

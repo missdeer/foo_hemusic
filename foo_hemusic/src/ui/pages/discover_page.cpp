@@ -290,12 +290,18 @@ void drawCentered(ID2D1RenderTarget* rt, const Theme& theme, D2D1_SIZE_F size,
              D2D1::RectF(0.0F, 0.0F, size.width, size.height));
 }
 
-float clientHeight(HWND hwnd) {
+// Viewport height in DIPs, matching the units of contentHeight_ (which comes
+// from rt->GetSize()). GetClientRect is physical pixels, so divide by the
+// window's DPI scale -- otherwise high-DPI panels clamp the scroll too early
+// and the bottom content stays unreachable.
+float viewportHeightDip(HWND hwnd) {
     RECT rc{};
     if (hwnd == nullptr || GetClientRect(hwnd, &rc) == 0) {
         return 0.0F;
     }
-    return static_cast<float>(rc.bottom - rc.top);
+    const float scale = d2d::dpiScaleForWindow(hwnd);
+    return static_cast<float>(rc.bottom - rc.top) /
+           (scale > 0.0F ? scale : 1.0F);
 }
 
 }  // namespace
@@ -430,7 +436,7 @@ bool DiscoverPage::onHostMessage(UINT msg, WPARAM /*wp*/, LPARAM /*lp*/) {
 void DiscoverPage::onMouseWheel(int wheelDelta) {
     const float notches = static_cast<float>(wheelDelta) / WHEEL_DELTA;
     const float maxScroll =
-        std::max(0.0F, contentHeight_ - clientHeight(host_));
+        std::max(0.0F, contentHeight_ - viewportHeightDip(host_));
     scrollY_ = std::clamp(scrollY_ - notches * kScrollStepPx, 0.0F, maxScroll);
     if (host_ != nullptr) {
         InvalidateRect(host_, nullptr, FALSE);
