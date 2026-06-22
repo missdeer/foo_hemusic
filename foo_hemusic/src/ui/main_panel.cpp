@@ -142,6 +142,12 @@ class MainPanel : public ui_element_instance {
                         self->m_canvas->resize(LOWORD(lp), HIWORD(lp));
                     }
                     return 0;
+                case WM_MOUSEWHEEL:
+                    // Win10/11 hover-scroll delivers the wheel to the window
+                    // under the cursor, so the child panel gets it without
+                    // stealing focus. GET_WHEEL_DELTA_WPARAM is already signed.
+                    self->m_discover.onMouseWheel(GET_WHEEL_DELTA_WPARAM(wp));
+                    return 0;
                 case DiscoverPage::kDoneMessage:
                     self->m_discover.onHostMessage(msg, wp, lp);
                     return 0;

@@ -267,7 +267,7 @@ foo_hemusic/
 按优先级，每一页都需要：列表 / 卡片虚拟滚动、空态、加载态、错误态、入列按钮。
 
 1. [HEMUSIC-12](https://jira.ismisv.com/browse/HEMUSIC-12) — **登录对话框**（替换临时 login_dlg；Linux.do 引导 + 等待授权 + 取消）
-2. [HEMUSIC-13](https://jira.ismisv.com/browse/HEMUSIC-13) — **发现页** 完整 4 段（新歌 / 新专 / 精选歌单 / 精选 MV）
+2. ~~[HEMUSIC-13](https://jira.ismisv.com/browse/HEMUSIC-13) — **发现页** 完整 4 段（新歌 / 新专 / 精选歌单 / 精选 MV）~~ ✅ 已完成（4 段 + 网格布局 + 纵向滚动；封面占位框），详见 [`DONE.md`](./DONE.md#phase-5--ui-业务页面)。**封面异步加载拆出 [HEMUSIC-31](https://jira.ismisv.com/browse/HEMUSIC-31)**（评审暴露的 ImageCache 生命周期/加固/device 位图/测试 CMake 约束已写入该 ticket）。
 3. [HEMUSIC-14](https://jira.ismisv.com/browse/HEMUSIC-14) — **搜索**（顶栏输入 + 联想浮层 + 综合 / 分类 Tab）
 4. [HEMUSIC-15](https://jira.ismisv.com/browse/HEMUSIC-15) — **歌单详情**（banner + 歌曲列表 + 全部入列）
 5. [HEMUSIC-16](https://jira.ismisv.com/browse/HEMUSIC-16) — **专辑详情**（同歌单详情结构）

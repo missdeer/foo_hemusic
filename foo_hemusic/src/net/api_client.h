@@ -67,7 +67,10 @@ class ApiClient {
     // triple (retaining the old refresh token when the response omits a new
     // one) and fires onTokensRefreshed. Returns the effective triple, or
     // nullopt on any transport/HTTP/parse failure or an empty access token.
-    std::optional<AuthTokenResult> refreshTokens();
+    // Inherits the triggering request's timeouts so an expired-token refresh
+    // can't outlive the short timeouts its caller chose.
+    std::optional<AuthTokenResult> refreshTokens(int connectTimeoutMs,
+                                                 int readTimeoutMs);
 
     Transport transport_;
     std::string baseUrl_;  // trailing '/' trimmed

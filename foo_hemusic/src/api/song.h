@@ -288,12 +288,12 @@ inline std::vector<SongInfo> parseSongList(const boost::json::value& value,
     return out;
 }
 
-// `SongInfo.artist` getter: artist names joined by " / "; "-" when none.
-// (Artists already have their names trimmed and empty names dropped by
-// model_detail::artists.)
-inline std::string songArtistText(const SongInfo& s) {
+// Artist names joined by " / "; "-" when none. Shared by SongInfo rows and
+// AlbumInfo cards -- both carry a SongArtist list. (Names are already trimmed
+// and empty ones dropped by model_detail::artists.)
+inline std::string artistNamesText(const std::vector<SongArtist>& artists) {
     std::string out;
-    for (const auto& a : s.artists) {
+    for (const auto& a : artists) {
         if (a.name.empty()) {
             continue;
         }
@@ -303,6 +303,11 @@ inline std::string songArtistText(const SongInfo& s) {
         out += a.name;
     }
     return out.empty() ? "-" : out;
+}
+
+// `SongInfo.artist` getter.
+inline std::string songArtistText(const SongInfo& s) {
+    return artistNamesText(s.artists);
 }
 
 }  // namespace hemusic

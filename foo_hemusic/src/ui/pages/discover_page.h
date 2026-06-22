@@ -1,9 +1,10 @@
 #pragma once
 
-// Discover page (PLAN.md Phase 4 final step: minimal discover_page). Loads
-// /v1/platforms -> resolves the discover-capable platform -> /v1/page/discover
-// and renders the first section (new songs) as a text list. Richer cards /
-// covers / the other three sections + scrolling come in Phase 5.
+// Discover page (HEMUSIC-13). Loads /v1/platforms -> resolves the
+// discover-capable platform -> /v1/page/discover and renders all four sections:
+// the new-songs list plus new-album / featured-playlist / featured-MV card
+// grids, with vertical mouse-wheel scrolling. Cover art is a placeholder box
+// for now; real async cover loading is HEMUSIC-31.
 //
 // Hosted inside MainPanel's HWND + render target: it owns no window and no
 // canvas. MainPanel forwards paint / the done-message; DiscoverPage runs the
@@ -25,6 +26,9 @@
 #include <thread>
 #include <vector>
 
+#include "api/album.h"
+#include "api/mv.h"
+#include "api/playlist.h"
 #include "api/song.h"
 #include "ui/theme.h"
 
@@ -60,6 +64,10 @@ class DiscoverPage {
     // MainPanel's WM_PAINT inside its canvas paint callback.
     void paint(ID2D1RenderTarget* rt, const Theme& theme, D2D1_SIZE_F size);
 
+    // Scrolls the content by a raw WM_MOUSEWHEEL delta (already the signed
+    // short from GET_WHEEL_DELTA_WPARAM). UI thread only.
+    void onMouseWheel(int wheelDelta);
+
    private:
     enum class Status : std::uint8_t {
         Idle,
@@ -75,10 +83,19 @@ class DiscoverPage {
     std::thread worker_;
     std::atomic<bool> loading_{false};
 
+    // mu_ guards the worker-written state (status_/message_ + the four section
+    // vectors). scrollY_ / contentHeight_ are touched only on the UI thread
+    // (paint / onMouseWheel / the kDoneMessage handler), so they need no lock.
     mutable std::mutex mu_;
     Status status_ = Status::Idle;
-    std::vector<SongInfo> songs_;  // new-songs section
-    std::string message_;          // error / status detail
+    std::vector<SongInfo> songs_;          // new-songs section
+    std::vector<AlbumInfo> albums_;        // new-albums grid
+    std::vector<PlaylistInfo> playlists_;  // featured-playlists grid
+    std::vector<MvInfo> mvs_;              // featured-mvs grid
+    std::string message_;                  // error / status detail
+
+    float scrollY_ = 0.0F;        // vertical scroll offset (UI thread)
+    float contentHeight_ = 0.0F;  // last measured content height (UI thread)
 };
 
 }  // namespace hemusic::ui

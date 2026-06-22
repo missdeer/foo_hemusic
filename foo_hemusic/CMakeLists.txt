@@ -166,6 +166,7 @@ if(FOO_HEMUSIC_TESTS)
     tests/ranking_test.cpp
     tests/search_test.cpp
     tests/discover_test.cpp
+    tests/discover_layout_test.cpp
     tests/platforms_test.cpp
     tests/url_codec_test.cpp
     tests/hemusic_url_test.cpp

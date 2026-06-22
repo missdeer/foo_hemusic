@@ -80,7 +80,7 @@ HttpResponse ApiClient::send(HttpRequest req) {
         return resp;
     }
 
-    if (!refreshTokens()) {
+    if (!refreshTokens(req.connectTimeoutMs, req.readTimeoutMs)) {
         return resp;  // refresh failed -> surface the original 401
     }
 
@@ -88,10 +88,13 @@ HttpResponse ApiClient::send(HttpRequest req) {
     return transport_(req);          // single replay; never retried again
 }
 
-std::optional<AuthTokenResult> ApiClient::refreshTokens() {
+std::optional<AuthTokenResult> ApiClient::refreshTokens(int connectTimeoutMs,
+                                                        int readTimeoutMs) {
     HttpRequest req;
     req.method = HttpMethod::Post;
     req.url = baseUrl_ + "/v1/auth/token/refresh";
+    req.connectTimeoutMs = connectTimeoutMs;
+    req.readTimeoutMs = readTimeoutMs;
     req.body =
         boost::json::serialize(buildRefreshRequest(refreshToken_, device_));
     // No bearer on the refresh exchange itself (matches Flutter's separate

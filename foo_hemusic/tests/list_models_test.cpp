@@ -5,6 +5,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 using hemusic::AlbumInfo;
+using hemusic::artistNamesText;
 using hemusic::parseAlbumInfo;
 using hemusic::parsePlaylistInfo;
 using hemusic::PlaylistInfo;
@@ -139,4 +140,17 @@ TEST_CASE("album platform falls back when absent or empty") {
     CHECK(parseAlbumInfo(parse(R"({"platform":""})"), "kg").platform == "kg");
     CHECK(parseAlbumInfo(parse(R"({"platform":"netease"})"), "kg").platform ==
           "netease");
+}
+
+TEST_CASE(
+    "artistNamesText joins an album's artists with ' / ', '-' when none") {
+    // The discover album card reuses songArtistText's join logic via the shared
+    // artistNamesText(vector<SongArtist>) helper. Assert it renders the album's
+    // artist list the same way a song row does.
+    auto multi = parseAlbumInfo(
+        parse(R"({"id":"1","name":"n","artists":["Alice","Bob"]})"));
+    CHECK(artistNamesText(multi.artists) == "Alice / Bob");
+
+    auto none = parseAlbumInfo(parse(R"({"id":"1","name":"n"})"));
+    CHECK(artistNamesText(none.artists) == "-");
 }
