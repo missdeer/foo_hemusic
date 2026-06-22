@@ -1,6 +1,8 @@
 #include "core/session.h"
 
+#include <algorithm>
 #include <utility>
+#include <vector>
 
 namespace hemusic {
 
@@ -39,27 +41,61 @@ std::optional<AuthTokenResult> Session::currentTokens() const {
 }
 
 bool Session::setTokens(const AuthTokenResult& tokens) {
-    std::lock_guard<std::mutex> lock(mu_);
-    tokens_ = tokens;
-    if (!store_) {
-        return false;
+    bool saved = false;
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        tokens_ = tokens;
+        // Hold the lock across the disk write so concurrent setTokens calls
+        // serialize: in-memory and on-disk advance together, last writer wins
+        // consistently in both places.
+        if (store_) {
+            saved = store_->save(tokens);
+        }
     }
-    // Hold the lock across the disk write so concurrent setTokens calls
-    // serialize: in-memory and on-disk advance together, last writer wins
-    // consistently in both places.
-    return store_->save(tokens);
+    notifyAuthListeners();
+    return saved;
 }
 
 void Session::clearTokens() {
-    std::lock_guard<std::mutex> lock(mu_);
-    tokens_.reset();
-    if (store_) {
-        store_->clear();
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        tokens_.reset();
+        if (store_) {
+            store_->clear();
+        }
+        // Any pre-clear ApiClient that's still mid-refresh would otherwise
+        // resurrect the credential when it calls back into setTokens; the
+        // generation guard in buildClient's callback short-circuits that.
+        ++generation_;
     }
-    // Any pre-clear ApiClient that's still mid-refresh would otherwise
-    // resurrect the credential when it calls back into setTokens; the
-    // generation guard in buildClient's callback short-circuits that.
-    ++generation_;
+    notifyAuthListeners();
+}
+
+Session::AuthListenerId Session::addAuthListener(AuthListener cb) {
+    std::lock_guard<std::mutex> lock(listenersMu_);
+    const AuthListenerId id = nextListenerId_++;
+    listeners_.emplace_back(id, std::move(cb));
+    return id;
+}
+
+void Session::removeAuthListener(AuthListenerId id) {
+    std::lock_guard<std::mutex> lock(listenersMu_);
+    std::erase_if(listeners_,
+                  [id](const auto& entry) { return entry.first == id; });
+}
+
+void Session::notifyAuthListeners() {
+    std::vector<AuthListener> snapshot;
+    {
+        std::lock_guard<std::mutex> lock(listenersMu_);
+        snapshot.reserve(listeners_.size());
+        for (const auto& [id, cb] : listeners_) {
+            snapshot.push_back(cb);
+        }
+    }
+    for (const auto& cb : snapshot) {
+        cb();
+    }
 }
 
 std::optional<ApiClient> Session::buildClient(ApiClient::Transport transport) {

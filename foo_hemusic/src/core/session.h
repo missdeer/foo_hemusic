@@ -1,9 +1,12 @@
 #pragma once
 
 #include <filesystem>
+#include <functional>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "auth/device_info.h"
 #include "auth/oauth_flow.h"
@@ -32,6 +35,12 @@ namespace hemusic {
 
 class Session {
    public:
+    // Fired when login/logout changes whether a credential is held, so UI
+    // observers (e.g. the main panel) can re-evaluate. A 401 token refresh
+    // does NOT fire this -- the auth identity is unchanged.
+    using AuthListener = std::function<void()>;
+    using AuthListenerId = unsigned long long;
+
     static Session& instance();
 
     // Captures session inputs + tries to load a previously saved credential.
@@ -51,14 +60,25 @@ class Session {
     // when none is held.
     std::optional<AuthTokenResult> currentTokens() const;
 
-    // Replaces in-memory credential + persists to disk + (TODO when added)
-    // notifies listeners. Returns true on successful disk write; returns
-    // false on disk failure (in-memory state is still updated -- the
-    // credential is valid for this run, just not for the next).
+    // Replaces in-memory credential + persists to disk + notifies auth
+    // listeners. Returns true on successful disk write; returns false on disk
+    // failure (in-memory state is still updated -- the credential is valid for
+    // this run, just not for the next).
     bool setTokens(const AuthTokenResult& tokens);
 
-    // Clears the credential, both in-memory and on disk. Idempotent.
+    // Clears the credential, both in-memory and on disk, then notifies auth
+    // listeners. Idempotent.
     void clearTokens();
+
+    // Registers a callback invoked whenever setTokens/clearTokens changes the
+    // logged-in state. Returns an id for removeAuthListener. The callback runs
+    // outside Session's lock, on whatever thread changed the state (the login
+    // worker for setTokens), so keep it to thread-safe work (e.g. PostMessage)
+    // and capture POD only -- never `this` of an object that may outlive the
+    // subscription. Observers must removeAuthListener before they are
+    // destroyed.
+    AuthListenerId addAuthListener(AuthListener cb);
+    void removeAuthListener(AuthListenerId id);
 
     // Builds an ApiClient pre-loaded with the current credential + wired so
     // that any 401 refresh inside ApiClient::send is mirrored back into
@@ -76,6 +96,10 @@ class Session {
    private:
     Session() = default;
 
+    // Copies listeners under listenersMu_ then invokes them with no lock held,
+    // so a listener may safely call back into Session.
+    void notifyAuthListeners();
+
     mutable std::mutex mu_;
     bool initialized_ = false;
     std::optional<TokenStore> store_;
@@ -88,6 +112,12 @@ class Session {
     // buildClient captures the live value; the callback only writes when
     // the value still matches.
     unsigned long long generation_ = 0;
+
+    // Separate lock so notify (which runs callbacks outside the lock) never
+    // contends with mu_; a callback re-entering Session can't deadlock.
+    mutable std::mutex listenersMu_;
+    std::vector<std::pair<AuthListenerId, AuthListener>> listeners_;
+    AuthListenerId nextListenerId_ = 1;
 };
 
 }  // namespace hemusic

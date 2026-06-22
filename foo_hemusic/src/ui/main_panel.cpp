@@ -18,6 +18,7 @@
 #include <memory>
 #include <utility>
 
+#include "core/session.h"
 #include "ui/d2d.h"
 #include "ui/pages/discover_page.h"
 #include "ui/theme.h"
@@ -35,6 +36,11 @@ constexpr GUID kGuidMainPanel = {
 
 constexpr wchar_t kWindowClass[] = L"foo_hemusic_main_panel";
 
+// Posted to ourselves by the Session auth listener (which runs on the login
+// worker thread) so the reload happens back on the UI thread. WM_APP+1 is
+// DiscoverPage::kDoneMessage, so this takes WM_APP+2.
+constexpr UINT WM_HEMUSIC_AUTH_CHANGED = WM_APP + 2;
+
 class MainPanel : public ui_element_instance {
    public:
     MainPanel(ui_element_config::ptr cfg, ui_element_instance_callback::ptr cb)
@@ -46,6 +52,10 @@ class MainPanel : public ui_element_instance {
     MainPanel& operator=(MainPanel&&) = delete;
 
     ~MainPanel() {
+        // Drop the subscription first so no late auth callback can post to a
+        // window we're about to tear down (WM_DESTROY also removes it; the id
+        // guard makes the double-remove a no-op).
+        unsubscribeAuth();
         if (m_hwnd != nullptr) {
             // Host released us without destroying the HWND first -- SDK
             // contract says we own teardown then.
@@ -63,6 +73,15 @@ class MainPanel : public ui_element_instance {
             m_canvas = std::make_unique<d2d::HwndCanvas>(m_hwnd);
             m_discover.attach(m_hwnd);
             m_discover.load();
+            // Re-pull when login/logout changes auth state. The callback fires
+            // on the login worker thread, so it only marshals to the UI thread
+            // via PostMessage; it captures the HWND (POD) -- posting to a
+            // since-destroyed window is harmless. Drop any prior subscription
+            // first so a second initializeWindow can't leak the old listener.
+            unsubscribeAuth();
+            const HWND hwnd = m_hwnd;
+            m_authListener = Session::instance().addAuthListener(
+                [hwnd] { PostMessageW(hwnd, WM_HEMUSIC_AUTH_CHANGED, 0, 0); });
         }
     }
 
@@ -126,7 +145,16 @@ class MainPanel : public ui_element_instance {
                 case DiscoverPage::kDoneMessage:
                     self->m_discover.onHostMessage(msg, wp, lp);
                     return 0;
+                case WM_HEMUSIC_AUTH_CHANGED:
+                    // load() is a no-op while a fetch is in flight; from the
+                    // not-logged-in state (the only state a login can leave) it
+                    // re-pulls. Invalidate to show the synchronous Loading
+                    // text.
+                    self->m_discover.load();
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                    return 0;
                 case WM_DESTROY:
+                    self->unsubscribeAuth();
                     if (self->m_canvas) {
                         self->m_canvas->discard();
                     }
@@ -153,9 +181,17 @@ class MainPanel : public ui_element_instance {
         ValidateRect(m_hwnd, nullptr);
     }
 
+    void unsubscribeAuth() {
+        if (m_authListener != 0) {
+            Session::instance().removeAuthListener(m_authListener);
+            m_authListener = 0;
+        }
+    }
+
     HWND m_hwnd = nullptr;
     std::unique_ptr<d2d::HwndCanvas> m_canvas;
     DiscoverPage m_discover;
+    Session::AuthListenerId m_authListener = 0;
     ui_element_config::ptr m_config;
     ui_element_instance_callback::ptr m_callback;
 };

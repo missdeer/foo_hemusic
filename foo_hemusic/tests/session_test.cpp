@@ -77,6 +77,21 @@ std::filesystem::path freshTempPath() {
            ("foo_hemusic_session_test_" + std::to_string(counter) + ".bin");
 }
 
+// Removes its auth listener on scope exit -- including stack unwinding from a
+// failing REQUIRE -- so a leaked callback can't survive in the process-wide
+// Session singleton and fire (reading freed test locals) during a later test.
+// Constructed after the locals it captures, so it is destroyed before them.
+struct ScopedAuthListener {
+    Session::AuthListenerId id;
+    explicit ScopedAuthListener(Session::AuthListener cb)
+        : id(Session::instance().addAuthListener(std::move(cb))) {}
+    ~ScopedAuthListener() { Session::instance().removeAuthListener(id); }
+    ScopedAuthListener(const ScopedAuthListener&) = delete;
+    ScopedAuthListener(ScopedAuthListener&&) = delete;
+    ScopedAuthListener& operator=(const ScopedAuthListener&) = delete;
+    ScopedAuthListener& operator=(ScopedAuthListener&&) = delete;
+};
+
 // Returns the session to a known empty + initialized state: there's no real
 // singleton reset, so we clear -> re-init to a fresh path -> clear again so
 // no prior credential leaks across tests.
@@ -201,6 +216,113 @@ TEST_CASE("buildClient wires onTokensRefreshed -> Session persist") {
     auto reloaded = Session::instance().currentTokens();
     REQUIRE(reloaded.has_value());
     CHECK(reloaded->accessToken == "AT-new");
+
+    Session::instance().clearTokens();
+    std::filesystem::remove(path);
+}
+
+TEST_CASE("addAuthListener fires on setTokens and observes the new state") {
+    auto path = freshTempPath();
+    resetSession(path);
+
+    int fired = 0;
+    bool authedWhenFired = false;
+    ScopedAuthListener listener([&] {
+        ++fired;
+        // Fired outside Session's lock and after state advances: a listener
+        // can safely re-enter and see the post-change state.
+        authedWhenFired = Session::instance().isAuthenticated();
+    });
+
+    REQUIRE(Session::instance().setTokens(tokens("AT", "RT", 1)));
+    CHECK(fired == 1);
+    CHECK(authedWhenFired);
+
+    Session::instance().clearTokens();
+    std::filesystem::remove(path);
+}
+
+TEST_CASE("clearTokens fires auth listener with logged-out state") {
+    auto path = freshTempPath();
+    resetSession(path);
+    REQUIRE(Session::instance().setTokens(tokens("AT", "RT", 1)));
+
+    int fired = 0;
+    bool authedWhenFired = true;
+    ScopedAuthListener listener([&] {
+        ++fired;
+        authedWhenFired = Session::instance().isAuthenticated();
+    });
+
+    Session::instance().clearTokens();
+    CHECK(fired == 1);
+    CHECK_FALSE(authedWhenFired);
+
+    std::filesystem::remove(path);
+}
+
+TEST_CASE("removeAuthListener stops further notifications") {
+    auto path = freshTempPath();
+    resetSession(path);
+
+    int fired = 0;
+    auto id = Session::instance().addAuthListener([&] { ++fired; });
+    Session::instance().removeAuthListener(id);
+
+    REQUIRE(Session::instance().setTokens(tokens("AT", "RT", 1)));
+    CHECK(fired == 0);
+
+    Session::instance().clearTokens();
+    std::filesystem::remove(path);
+}
+
+TEST_CASE("multiple auth listeners all fire") {
+    auto path = freshTempPath();
+    resetSession(path);
+
+    int a = 0;
+    int b = 0;
+    ScopedAuthListener listenerA([&] { ++a; });
+    ScopedAuthListener listenerB([&] { ++b; });
+
+    REQUIRE(Session::instance().setTokens(tokens("AT", "RT", 1)));
+    CHECK(a == 1);
+    CHECK(b == 1);
+
+    Session::instance().clearTokens();
+    std::filesystem::remove(path);
+}
+
+TEST_CASE("401 token refresh does not fire the auth listener") {
+    auto path = freshTempPath();
+    resetSession(path);
+    REQUIRE(Session::instance().setTokens(tokens("AT-old", "RT-old", 0)));
+
+    // Subscribe only after the login setTokens above, so any post-refresh
+    // count is attributable to the refresh path alone.
+    int fired = 0;
+    ScopedAuthListener listener([&] { ++fired; });
+
+    FakeTransport t;
+    t.scripted.push_back(resp(kStatusUnauthorized));
+    t.scripted.push_back(
+        resp(kStatusOk, R"({"access_token":"AT-new","refresh_token":"RT-new",)"
+                        R"("expires_at":2000})"));
+    t.scripted.push_back(resp(kStatusOk, "{}"));
+
+    auto client = Session::instance().buildClient(t.fn());
+    REQUIRE(client.has_value());
+
+    HttpRequest req;
+    req.method = HttpMethod::Get;
+    req.url = std::string(kBaseUrl) + "/v1/discover";
+    auto r = client->send(req);
+    CHECK(r.status == 200);
+
+    // Refresh advanced the credential but kept the logged-in identity, so the
+    // panel has nothing to re-evaluate -- the listener must stay silent.
+    CHECK(fired == 0);
+    CHECK(Session::instance().currentTokens()->accessToken == "AT-new");
 
     Session::instance().clearTokens();
     std::filesystem::remove(path);
