@@ -69,4 +69,10 @@ struct Theme {
 // null (returns defaults). Call on the UI thread.
 Theme themeFromCallback(ui_element_instance_callback* cb);
 
+// Builds a Theme from the global ui_config_manager (Default UI) for standalone
+// windows that have no ui_element callback -- e.g. the login dialog. Falls back
+// to system colors per element, and to plain defaults when the service is
+// absent (fb2k < 2.0). Call on the UI thread.
+Theme themeFromHost();
+
 }  // namespace hemusic::ui

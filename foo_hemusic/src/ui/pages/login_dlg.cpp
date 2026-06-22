@@ -11,8 +11,14 @@
 
 #include <objbase.h>
 #include <shellapi.h>
+#include <windowsx.h>
 
-#include <filesystem>
+#include <d2d1.h>
+#include <d2d1helper.h>
+#include <dwrite.h>
+#include <wrl/client.h>
+
+#include <cmath>
 #include <memory>
 #include <string>
 #include <thread>
@@ -27,6 +33,8 @@
 #include "core/config.h"
 #include "core/session.h"
 #include "net/http_client.h"
+#include "ui/d2d.h"
+#include "ui/theme.h"
 
 // Threading model: the menu command runs on fb2k's main thread and creates this
 // modeless window there, so fb2k's message pump dispatches its messages. The
@@ -34,16 +42,23 @@
 // UI only via PostMessage (fire-and-forget) -- never a synchronous SendMessage
 // -- so the UI thread can join the worker without risking a cross-thread
 // deadlock:
-//   - PostMessage WM_LOGIN_PROGRESS  -> update status text
+//   - PostMessage WM_LOGIN_PROGRESS  -> update phase, repaint
 //   - PostMessage WM_LOGIN_DONE      -> report result + tear down
 // openUrl (ShellExecuteW) runs on the worker itself (COM-initialized). Teardown
 // always sets the cancel event before joining, so a worker mid-poll exits
 // promptly instead of hanging the join. Cancellation is a manual-reset event
 // the WaitFn polls between status polls.
+//
+// Presentation (Phase 5 / HEMUSIC-12): the dialog draws itself with Direct2D so
+// it fuses with the fb2k host theme (colors + font via themeFromHost), shows an
+// animated progress ring while waiting for authorization, and a custom-drawn
+// cancel button. The worker/threading layer above is unchanged.
 
 namespace hemusic::ui {
 
 namespace {
+
+using Microsoft::WRL::ComPtr;
 
 constexpr const char* kAppVersion = "0.0.1";  // mirrors component.cpp
 constexpr wchar_t kWindowClass[] = L"foo_hemusic_login";
@@ -51,23 +66,44 @@ constexpr wchar_t kWindowClass[] = L"foo_hemusic_login";
 constexpr UINT WM_LOGIN_PROGRESS = WM_APP + 1;
 constexpr UINT WM_LOGIN_DONE = WM_APP + 2;
 
-constexpr int kIdCancel = 1;
+constexpr UINT_PTR kRingTimerId = 1;
+constexpr UINT kRingTimerMs = 33;        // ~30 fps spinner
+constexpr float kRingDegPerTick = 9.0F;  // rotation step per timer tick
 
 constexpr long kHttpOkMin = 200;
 constexpr long kHttpOkMax = 300;          // exclusive (2xx)
 constexpr DWORD kMillisPerSecond = 1000;  // WaitForSingleObject unit
 constexpr INT_PTR kShellExecOk = 32;      // ShellExecuteW success is > 32
 
-// Window / control layout (device-independent pixels at 96 DPI).
-constexpr int kDlgWidth = 380;
-constexpr int kDlgHeight = 150;
-constexpr int kMargin = 20;
-constexpr int kStatusWidth = 340;
-constexpr int kStatusHeight = 40;
-constexpr int kBtnWidth = 80;
-constexpr int kBtnHeight = 28;
-constexpr int kBtnX = 150;
-constexpr int kBtnY = 75;
+// Layout in device-independent pixels (the render target uses desktop DPI, so
+// rt->GetSize() returns these DIPs regardless of the physical pixel size we
+// create the window at). Hit-testing converts mouse pixels back to DIPs via the
+// captured DPI scale.
+constexpr float kDlgW = 360.0F;
+constexpr float kDlgH = 212.0F;
+constexpr float kTitleY = 18.0F;
+constexpr float kTitleSize = 17.0F;
+constexpr float kRingCenterY = 78.0F;
+constexpr float kRingRadius = 22.0F;
+constexpr float kRingStroke = 3.5F;
+constexpr float kTrackStroke = 2.0F;
+constexpr float kRingSweepDeg = 270.0F;
+constexpr float kStatusY = 116.0F;
+constexpr float kStatusH = 24.0F;
+constexpr float kStatusSize = 14.0F;
+constexpr float kBtnW = 96.0F;
+constexpr float kBtnH = 32.0F;
+constexpr float kBtnY = 156.0F;
+constexpr float kBtnRadius = 5.0F;
+constexpr float kBtnTextSize = 14.0F;
+
+constexpr float kBaseDpi = 96.0F;
+constexpr float kDeg2Rad = 3.14159265F / 180.0F;
+constexpr float kFullCircleDeg = 360.0F;
+constexpr float kHalf = 0.5F;
+constexpr float kTitleBottomPad = 4.0F;
+// How far to push the button fill toward text on press, for click feedback.
+constexpr float kPressMix = 0.2F;
 
 // {BCE470A9-E0B2-4130-8B39-85840CB44BA8}
 constexpr GUID kGuidMenuGroup = {
@@ -105,21 +141,48 @@ const wchar_t* phaseText(LoginPhase phase) {
         case LoginPhase::Connecting:
             return L"正在连接 HE-Music…";
         case LoginPhase::WaitingForAuthorization:
-            return L"请在浏览器中完成授权…";
+            return L"请在浏览器中完成 Linux.do 授权…";
         case LoginPhase::Finalizing:
             return L"授权成功，正在获取账号…";
     }
     return L"";
 }
 
+D2D1_COLOR_F mix(const D2D1_COLOR_F& a, const D2D1_COLOR_F& b, float t) {
+    return D2D1::ColorF(a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t,
+                        a.b + (b.b - a.b) * t, 1.0F);
+}
+
+// Login result, filled by the worker just before it posts WM_LOGIN_DONE and
+// read by the handler. Embedded in LoginUi (not heap-passed via lParam) so the
+// normal teardown frees it -- a posted-but-purged message during external
+// window destruction can't leak it.
+struct DoneResult {
+    LoginOutcome outcome = LoginOutcome::TransportError;
+    std::string detail;     // username on success, else error message
+    bool persisted = true;  // whether the token reached disk (success path)
+};
+
 // State for one open dialog; owned by the window (GWLP_USERDATA), freed in
 // WM_DESTROY after the worker has joined. Single instance via g_active.
 struct LoginUi {
     HWND hwnd = nullptr;
-    HWND status = nullptr;
-    HWND cancelBtn = nullptr;
     HANDLE cancelEvent = nullptr;  // manual-reset
     std::thread worker;
+    std::unique_ptr<d2d::HwndCanvas> canvas;
+
+    // UI-thread-only render state (the worker only mutates via PostMessage).
+    LoginPhase phase = LoginPhase::Connecting;
+    float ringAngle = 0.0F;
+    bool cancelling = false;
+    bool btnHover = false;
+    bool btnPressed = false;
+    bool tracking = false;  // WM_MOUSELEAVE armed
+    float dpiScale = 1.0F;  // physical pixels per DIP
+
+    // Written once by the worker before its WM_LOGIN_DONE post; read by the
+    // handler after. No overlap, so the post's ordering suffices (no lock).
+    DoneResult done;
 
     // Captured on the main thread so the worker never touches cfg_var/core_api.
     // Disk persistence on success goes through Session, which already holds
@@ -129,13 +192,6 @@ struct LoginUi {
 };
 
 LoginUi* g_active = nullptr;  // main-thread only
-
-// Heap payload handed to WM_LOGIN_DONE (lParam); the handler takes ownership.
-struct DonePayload {
-    LoginOutcome outcome = LoginOutcome::TransportError;
-    std::string detail;     // username on success, else error message
-    bool persisted = true;  // whether the token reached disk (success path)
-};
 
 // GET /v1/user/info with the fresh token -> human display name. Prefers
 // nickname, then username, then the numeric id, matching how the Flutter client
@@ -187,29 +243,29 @@ void loginWorker(LoginUi* ui) {
 
     LoginResult result = runLogin(ui->baseUrl, "linuxdo", "", ui->device, cb);
 
-    auto payload = std::make_unique<DonePayload>();
-    payload->outcome = result.outcome;
+    ui->done.outcome = result.outcome;
     if (result.outcome == LoginOutcome::Success) {
         // Push the credential through Session so the in-memory snapshot every
         // page consults is updated atomically with the disk write -- a later
         // ApiClient::send (from any thread) picks up the new bearer without
         // ever rereading the file.
-        payload->persisted = Session::instance().setTokens(result.token);
-        payload->detail =
+        ui->done.persisted = Session::instance().setTokens(result.token);
+        ui->done.detail =
             fetchUsername(http, ui->baseUrl, result.token.accessToken);
     } else {
-        payload->detail = result.message;
+        ui->done.detail = result.message;
     }
     if (SUCCEEDED(comInit)) {
         CoUninitialize();
     }
-    // Last touch of ui: after this the UI thread may destroy it.
-    PostMessageW(ui->hwnd, WM_LOGIN_DONE, 0,
-                 reinterpret_cast<LPARAM>(payload.release()));
+    // Last touch of ui: the worker is done writing ui->done, so signal the UI
+    // thread. If the window is already gone (external teardown) the message is
+    // simply dropped -- nothing leaks, since done lives inside ui.
+    PostMessageW(ui->hwnd, WM_LOGIN_DONE, 0, 0);
 }
 
 // Runs on the main thread: SDK console/popup calls are safe here.
-void reportResult(const DonePayload& p) {
+void reportResult(const DoneResult& p) {
     switch (p.outcome) {
         case LoginOutcome::Success: {
             const std::string who = p.detail.empty() ? "(unknown)" : p.detail;
@@ -234,64 +290,327 @@ void reportResult(const DonePayload& p) {
 }
 
 void beginCancel(LoginUi* ui) {
+    if (ui->cancelling) {
+        return;
+    }
     SetEvent(ui->cancelEvent);
-    EnableWindow(ui->cancelBtn, FALSE);
-    SetWindowTextW(ui->status, L"正在取消…");
+    ui->cancelling = true;
+    InvalidateRect(ui->hwnd, nullptr, FALSE);
+}
+
+// --- Drawing -------------------------------------------------------------
+
+// Centered text format; cheap to rebuild each paint (transient dialog).
+ComPtr<IDWriteTextFormat> makeFormat(const std::wstring& family, float size) {
+    ComPtr<IDWriteTextFormat> fmt;
+    IDWriteFactory* dw = d2d::dwriteFactory();
+    if (dw == nullptr) {
+        return nullptr;
+    }
+    dw->CreateTextFormat(family.c_str(), nullptr, DWRITE_FONT_WEIGHT_NORMAL,
+                         DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                         size, L"", fmt.GetAddressOf());
+    if (fmt) {
+        fmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        fmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    }
+    return fmt;
+}
+
+void drawText(ID2D1RenderTarget* rt, const std::wstring& text,
+              IDWriteTextFormat* fmt, const D2D1_RECT_F& rect,
+              const D2D1_COLOR_F& color) {
+    if (fmt == nullptr || text.empty()) {
+        return;
+    }
+    ComPtr<ID2D1SolidColorBrush> brush;
+    if (FAILED(rt->CreateSolidColorBrush(color, brush.GetAddressOf()))) {
+        return;
+    }
+    rt->DrawTextW(text.c_str(), static_cast<UINT32>(text.size()), fmt, rect,
+                  brush.Get());
+}
+
+// 3/4 arc centered at the origin, swept clockwise; reused across paints (it is
+// a device-independent resource) and rotated/translated into place per frame.
+ID2D1PathGeometry* ringGeometry() {
+    static ComPtr<ID2D1PathGeometry> geo = [] {
+        ComPtr<ID2D1PathGeometry> g;
+        ID2D1Factory* f = d2d::factory();
+        if (f == nullptr || FAILED(f->CreatePathGeometry(g.GetAddressOf()))) {
+            return ComPtr<ID2D1PathGeometry>{};
+        }
+        ComPtr<ID2D1GeometrySink> sink;
+        if (FAILED(g->Open(sink.GetAddressOf()))) {
+            return ComPtr<ID2D1PathGeometry>{};
+        }
+        const float end = kRingSweepDeg * kDeg2Rad;
+        sink->BeginFigure(D2D1::Point2F(kRingRadius, 0.0F),
+                          D2D1_FIGURE_BEGIN_HOLLOW);
+        sink->AddArc(D2D1::ArcSegment(
+            D2D1::Point2F(kRingRadius * std::cos(end),
+                          kRingRadius * std::sin(end)),
+            D2D1::SizeF(kRingRadius, kRingRadius), 0.0F,
+            D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_LARGE));
+        sink->EndFigure(D2D1_FIGURE_END_OPEN);
+        sink->Close();
+        return g;
+    }();
+    return geo.Get();
+}
+
+void drawRing(ID2D1RenderTarget* rt, const Theme& theme, float centerX,
+              float angle) {
+    const D2D1_POINT_2F center = D2D1::Point2F(centerX, kRingCenterY);
+    // Faint full-circle track.
+    ComPtr<ID2D1SolidColorBrush> track;
+    if (SUCCEEDED(rt->CreateSolidColorBrush(theme.secondaryText,
+                                            track.GetAddressOf()))) {
+        rt->DrawEllipse(D2D1::Ellipse(center, kRingRadius, kRingRadius),
+                        track.Get(), kTrackStroke);
+    }
+    // Rotating accent arc on top.
+    ID2D1PathGeometry* geo = ringGeometry();
+    ComPtr<ID2D1SolidColorBrush> accent;
+    if (geo == nullptr || FAILED(rt->CreateSolidColorBrush(
+                              theme.selection, accent.GetAddressOf()))) {
+        return;
+    }
+    rt->SetTransform(D2D1::Matrix3x2F::Rotation(angle) *
+                     D2D1::Matrix3x2F::Translation(center.x, center.y));
+    rt->DrawGeometry(geo, accent.Get(), kRingStroke);
+    rt->SetTransform(D2D1::Matrix3x2F::Identity());
+}
+
+D2D1_RECT_F buttonRect(float canvasW) {
+    const float x = (canvasW - kBtnW) * kHalf;
+    return D2D1::RectF(x, kBtnY, x + kBtnW, kBtnY + kBtnH);
+}
+
+void drawButton(ID2D1RenderTarget* rt, const Theme& theme, const LoginUi* ui,
+                float canvasW) {
+    const D2D1_RECT_F rect = buttonRect(canvasW);
+    const D2D1_ROUNDED_RECT rr =
+        D2D1::RoundedRect(rect, kBtnRadius, kBtnRadius);
+    ComPtr<IDWriteTextFormat> fmt = makeFormat(theme.fontFamily, kBtnTextSize);
+
+    const bool active = !ui->cancelling && (ui->btnHover || ui->btnPressed);
+    if (active) {
+        D2D1_COLOR_F fill = ui->btnPressed
+                                ? mix(theme.selection, theme.text, kPressMix)
+                                : theme.selection;
+        ComPtr<ID2D1SolidColorBrush> fillBrush;
+        if (SUCCEEDED(
+                rt->CreateSolidColorBrush(fill, fillBrush.GetAddressOf()))) {
+            rt->FillRoundedRectangle(rr, fillBrush.Get());
+        }
+        drawText(rt, L"取消", fmt.Get(), rect, theme.background);
+    } else {
+        // Outline + theme text; dimmed while cancelling (button is inert then).
+        const D2D1_COLOR_F edge =
+            ui->cancelling ? theme.secondaryText : theme.text;
+        ComPtr<ID2D1SolidColorBrush> edgeBrush;
+        if (SUCCEEDED(rt->CreateSolidColorBrush(theme.secondaryText,
+                                                edgeBrush.GetAddressOf()))) {
+            rt->DrawRoundedRectangle(rr, edgeBrush.Get(), 1.0F);
+        }
+        drawText(rt, L"取消", fmt.Get(), rect, edge);
+    }
+}
+
+void onPaint(LoginUi* ui) {
+    if (!ui->canvas) {
+        ValidateRect(ui->hwnd, nullptr);
+        return;
+    }
+    const Theme theme = themeFromHost();
+    ui->canvas->paint([&](ID2D1HwndRenderTarget* rt) {
+        const D2D1_SIZE_F size = rt->GetSize();
+        rt->Clear(theme.background);
+
+        ComPtr<IDWriteTextFormat> titleFmt =
+            makeFormat(theme.fontFamily, kTitleSize);
+        drawText(rt, L"登录 HE-Music", titleFmt.Get(),
+                 D2D1::RectF(0.0F, kTitleY, size.width,
+                             kTitleY + kTitleSize + kTitleBottomPad),
+                 theme.text);
+
+        drawRing(rt, theme, size.width * kHalf, ui->ringAngle);
+
+        const std::wstring status =
+            ui->cancelling ? L"正在取消…" : phaseText(ui->phase);
+        ComPtr<IDWriteTextFormat> statusFmt =
+            makeFormat(theme.fontFamily, kStatusSize);
+        drawText(rt, status, statusFmt.Get(),
+                 D2D1::RectF(0.0F, kStatusY, size.width, kStatusY + kStatusH),
+                 theme.secondaryText);
+
+        drawButton(rt, theme, ui, size.width);
+    });
+    ValidateRect(ui->hwnd, nullptr);
+}
+
+// --- Input ---------------------------------------------------------------
+
+bool pointInButton(const LoginUi* ui, int px, int py, float canvasW) {
+    const float dipX = static_cast<float>(px) / ui->dpiScale;
+    const float dipY = static_cast<float>(py) / ui->dpiScale;
+    const D2D1_RECT_F r = buttonRect(canvasW);
+    return dipX >= r.left && dipX < r.right && dipY >= r.top && dipY < r.bottom;
+}
+
+float canvasWidthDip(const LoginUi* ui) {
+    RECT rc{};
+    if (GetClientRect(ui->hwnd, &rc) == 0) {
+        return kDlgW;
+    }
+    return static_cast<float>(rc.right - rc.left) / ui->dpiScale;
+}
+
+void onMouseMove(LoginUi* ui, int px, int py) {
+    if (!ui->tracking) {
+        TRACKMOUSEEVENT tme{sizeof(tme), TME_LEAVE, ui->hwnd, 0};
+        TrackMouseEvent(&tme);
+        ui->tracking = true;
+    }
+    const bool hover =
+        !ui->cancelling && pointInButton(ui, px, py, canvasWidthDip(ui));
+    if (hover != ui->btnHover) {
+        ui->btnHover = hover;
+        InvalidateRect(ui->hwnd, nullptr, FALSE);
+    }
+}
+
+void onMouseLeave(LoginUi* ui) {
+    ui->tracking = false;
+    // btnPressed is owned by the capture lifecycle (released on button-up or
+    // WM_CAPTURECHANGED), not by leave -- clearing it here without releasing
+    // capture would strand the capture. Leave only drops hover.
+    if (ui->btnHover) {
+        ui->btnHover = false;
+        InvalidateRect(ui->hwnd, nullptr, FALSE);
+    }
+}
+
+// WM_CAPTURECHANGED: capture was lost (stolen by another window, or our own
+// ReleaseCapture). Clear the pressed state so the button doesn't stick down.
+void onCaptureChanged(LoginUi* ui) {
+    if (ui->btnPressed) {
+        ui->btnPressed = false;
+        InvalidateRect(ui->hwnd, nullptr, FALSE);
+    }
+}
+
+void onButtonDown(LoginUi* ui, int px, int py) {
+    if (ui->cancelling || !pointInButton(ui, px, py, canvasWidthDip(ui))) {
+        return;
+    }
+    ui->btnPressed = true;
+    SetCapture(ui->hwnd);
+    InvalidateRect(ui->hwnd, nullptr, FALSE);
+}
+
+void onButtonUp(LoginUi* ui, int px, int py) {
+    if (!ui->btnPressed) {
+        return;
+    }
+    ui->btnPressed = false;
+    ReleaseCapture();
+    const bool inside = pointInButton(ui, px, py, canvasWidthDip(ui));
+    InvalidateRect(ui->hwnd, nullptr, FALSE);
+    if (inside) {
+        beginCancel(ui);
+    }
+}
+
+void advanceRing(LoginUi* ui) {
+    ui->ringAngle += kRingDegPerTick;
+    if (ui->ringAngle >= kFullCircleDeg) {
+        ui->ringAngle -= kFullCircleDeg;
+    }
+    InvalidateRect(ui->hwnd, nullptr, FALSE);
+}
+
+// Sole teardown path (WM_DESTROY). External destruction (fb2k shutdown / owner
+// closing) can arrive while the worker is still polling, so signal cancel first
+// or the join would hang waiting for a worker that never stops.
+void destroyLoginUi(HWND hwnd, LoginUi* ui) {
+    KillTimer(hwnd, kRingTimerId);
+    if (ui->cancelEvent != nullptr) {
+        SetEvent(ui->cancelEvent);
+    }
+    if (ui->worker.joinable()) {
+        ui->worker.join();  // already joined on the DONE path
+    }
+    if (ui->canvas) {
+        ui->canvas->discard();
+    }
+    if (ui->cancelEvent != nullptr) {
+        CloseHandle(ui->cancelEvent);
+    }
+    if (g_active == ui) {
+        g_active = nullptr;
+    }
+    delete ui;
+    SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
 }
 
 LRESULT CALLBACK loginWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     auto* ui =
         reinterpret_cast<LoginUi*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (ui == nullptr) {
+        // Pre-creation messages (before GWLP_USERDATA is set).
+        return DefWindowProcW(hwnd, msg, wp, lp);
+    }
     switch (msg) {
-        case WM_LOGIN_PROGRESS:
-            if (ui != nullptr) {
-                SetWindowTextW(ui->status,
-                               phaseText(static_cast<LoginPhase>(wp)));
+        case WM_ERASEBKGND:
+            return 1;  // D2D paints the whole surface.
+        case WM_PAINT:
+            onPaint(ui);
+            return 0;
+        case WM_SIZE:
+            if (ui->canvas) {
+                ui->canvas->resize(LOWORD(lp), HIWORD(lp));
             }
             return 0;
-        case WM_LOGIN_DONE: {
-            std::unique_ptr<DonePayload> payload(
-                reinterpret_cast<DonePayload*>(lp));
-            reportResult(*payload);
-            if (ui != nullptr && ui->worker.joinable()) {
+        case WM_TIMER:
+            if (wp == kRingTimerId) {
+                advanceRing(ui);
+            }
+            return 0;
+        case WM_MOUSEMOVE:
+            onMouseMove(ui, GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
+            return 0;
+        case WM_MOUSELEAVE:
+            onMouseLeave(ui);
+            return 0;
+        case WM_LBUTTONDOWN:
+            onButtonDown(ui, GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
+            return 0;
+        case WM_LBUTTONUP:
+            onButtonUp(ui, GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
+            return 0;
+        case WM_CAPTURECHANGED:
+            onCaptureChanged(ui);
+            return 0;
+        case WM_LOGIN_PROGRESS:
+            ui->phase = static_cast<LoginPhase>(wp);
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        case WM_LOGIN_DONE:
+            reportResult(ui->done);
+            if (ui->worker.joinable()) {
                 ui->worker.join();
             }
             DestroyWindow(hwnd);
             return 0;
-        }
-        case WM_COMMAND:
-            if (LOWORD(wp) == kIdCancel && ui != nullptr) {
-                beginCancel(ui);
-            }
-            return 0;
         case WM_CLOSE:
             // Don't destroy yet: signal cancel and wait for the worker's DONE,
             // which is the single teardown path.
-            if (ui != nullptr) {
-                beginCancel(ui);
-            }
+            beginCancel(ui);
             return 0;
         case WM_DESTROY:
-            if (ui != nullptr) {
-                // External destruction (fb2k shutdown / owner closing) can
-                // reach here while the worker is still polling: signal cancel
-                // first so the join doesn't hang waiting for a worker that
-                // never stops.
-                if (ui->cancelEvent != nullptr) {
-                    SetEvent(ui->cancelEvent);
-                }
-                if (ui->worker.joinable()) {
-                    ui->worker.join();  // already joined on the DONE path
-                }
-                if (ui->cancelEvent != nullptr) {
-                    CloseHandle(ui->cancelEvent);
-                }
-                if (g_active == ui) {
-                    g_active = nullptr;
-                }
-                delete ui;
-                SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
-            }
+            destroyLoginUi(hwnd, ui);
             return 0;
         default:
             break;
@@ -299,20 +618,34 @@ LRESULT CALLBACK loginWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
-void ensureWindowClass() {
+bool ensureWindowClass() {
     static bool registered = false;
     if (registered) {
-        return;
+        return true;
     }
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
+    wc.style = CS_HREDRAW | CS_VREDRAW;
     wc.lpfnWndProc = loginWndProc;
     wc.hInstance = core_api::get_my_instance();
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
+    // No hbrBackground: D2D owns the whole client area.
     wc.lpszClassName = kWindowClass;
-    RegisterClassExW(&wc);
+    if (RegisterClassExW(&wc) == 0) {
+        return false;  // leave registered=false so a later attempt can retry
+    }
     registered = true;
+    return true;
+}
+
+float queryDpiScale() {
+    HDC hdc = GetDC(nullptr);
+    if (hdc == nullptr) {
+        return 1.0F;
+    }
+    const int dpi = GetDeviceCaps(hdc, LOGPIXELSX);
+    ReleaseDC(nullptr, hdc);
+    return dpi > 0 ? static_cast<float>(dpi) / kBaseDpi : 1.0F;
 }
 
 void centerOnOwner(HWND hwnd, HWND owner) {
@@ -340,7 +673,10 @@ void showLoginDialog() {
         SetForegroundWindow(g_active->hwnd);
         return;
     }
-    ensureWindowClass();
+    if (!ensureWindowClass()) {
+        console::print("HE-Music: 无法注册登录窗口类");
+        return;
+    }
 
     auto ui = std::make_unique<LoginUi>();
     ui->cancelEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
@@ -352,32 +688,32 @@ void showLoginDialog() {
     ui->baseUrl = config::apiBaseUrl();
     ui->device =
         makeDeviceInfo(config::deviceId(), queryComputerName(), kAppVersion);
+    ui->dpiScale = queryDpiScale();
+
+    // The window is sized in physical pixels = DIP layout * DPI scale, so the
+    // D2D render target (desktop DPI) reports our DIP layout via GetSize().
+    const int pxW = static_cast<int>(kDlgW * ui->dpiScale);
+    const int pxH = static_cast<int>(kDlgH * ui->dpiScale);
 
     HINSTANCE inst = core_api::get_my_instance();
     auto* owner = reinterpret_cast<HWND>(core_api::get_main_window());
-    HWND hwnd = CreateWindowExW(
-        WS_EX_DLGMODALFRAME, kWindowClass, L"HE-Music 登录",
-        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU, CW_USEDEFAULT, CW_USEDEFAULT,
-        kDlgWidth, kDlgHeight, owner, nullptr, inst, nullptr);
+    // CreateWindow size includes the non-client frame; expand so the client
+    // area matches our intended DIP canvas.
+    RECT want{0, 0, pxW, pxH};
+    AdjustWindowRectEx(&want, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU, FALSE,
+                       WS_EX_DLGMODALFRAME);
+    HWND hwnd =
+        CreateWindowExW(WS_EX_DLGMODALFRAME, kWindowClass, L"HE-Music 登录",
+                        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU, CW_USEDEFAULT,
+                        CW_USEDEFAULT, want.right - want.left,
+                        want.bottom - want.top, owner, nullptr, inst, nullptr);
     if (hwnd == nullptr) {
         CloseHandle(ui->cancelEvent);
         console::print("HE-Music: 无法创建登录窗口");
         return;
     }
     ui->hwnd = hwnd;
-    ui->status = CreateWindowExW(
-        0, L"STATIC", L"正在连接 HE-Music…", WS_CHILD | WS_VISIBLE, kMargin,
-        kMargin, kStatusWidth, kStatusHeight, hwnd, nullptr, inst, nullptr);
-    ui->cancelBtn = CreateWindowExW(
-        0, L"BUTTON", L"取消", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, kBtnX,
-        kBtnY, kBtnWidth, kBtnHeight, hwnd,
-        reinterpret_cast<HMENU>(static_cast<UINT_PTR>(kIdCancel)), inst,
-        nullptr);
-
-    auto* font = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
-    SendMessageW(ui->status, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
-    SendMessageW(ui->cancelBtn, WM_SETFONT, reinterpret_cast<WPARAM>(font),
-                 TRUE);
+    ui->canvas = std::make_unique<d2d::HwndCanvas>(hwnd);
 
     LoginUi* raw = ui.release();
     SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(raw));
@@ -386,6 +722,7 @@ void showLoginDialog() {
     centerOnOwner(hwnd, owner);
     ShowWindow(hwnd, SW_SHOW);
     UpdateWindow(hwnd);
+    SetTimer(hwnd, kRingTimerId, kRingTimerMs, nullptr);
 
     raw->worker = std::thread(loginWorker, raw);
 }

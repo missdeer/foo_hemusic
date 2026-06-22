@@ -22,17 +22,14 @@ D2D1_COLOR_F blend(const D2D1_COLOR_F& a, const D2D1_COLOR_F& b, float t) {
                         1.0F);
 }
 
-}  // namespace
-
-Theme themeFromCallback(ui_element_instance_callback* cb) {
+// Assembles a Theme from already-resolved host colors + font, shared by both
+// the ui_element-callback and the global ui_config_manager paths.
+Theme buildTheme(COLORREF background, COLORREF text, COLORREF selection,
+                 HFONT font) {
     Theme theme;
-    if (cb == nullptr) {
-        return theme;
-    }
-
-    theme.background = toColorF(cb->query_std_color(ui_color_background));
-    theme.text = toColorF(cb->query_std_color(ui_color_text));
-    theme.selection = toColorF(cb->query_std_color(ui_color_selection));
+    theme.background = toColorF(background);
+    theme.text = toColorF(text);
+    theme.selection = toColorF(selection);
     // No dedicated "secondary text" host color; dim the text toward the
     // background so artist/sub lines read as muted in both light and dark.
     theme.secondaryText =
@@ -40,7 +37,7 @@ Theme themeFromCallback(ui_element_instance_callback* cb) {
 
     // Default UI font: pull the face name off the host's HFONT so the panel
     // tracks the user's chosen family (PLAN §3.5). Size stays per-element.
-    if (HFONT font = cb->query_font_ex(ui_font_default); font != nullptr) {
+    if (font != nullptr) {
         LOGFONTW lf{};
         if (GetObjectW(font, sizeof(lf), &lf) != 0 &&
             lf.lfFaceName[0] != L'\0') {
@@ -48,6 +45,38 @@ Theme themeFromCallback(ui_element_instance_callback* cb) {
         }
     }
     return theme;
+}
+
+}  // namespace
+
+Theme themeFromCallback(ui_element_instance_callback* cb) {
+    if (cb == nullptr) {
+        return Theme{};
+    }
+    return buildTheme(cb->query_std_color(ui_color_background),
+                      cb->query_std_color(ui_color_text),
+                      cb->query_std_color(ui_color_selection),
+                      cb->query_font_ex(ui_font_default));
+}
+
+Theme themeFromHost() {
+    ui_config_manager::ptr cfg;
+    if (!ui_config_manager::tryGet(cfg)) {
+        return Theme{};
+    }
+    // query_color returns true only when the user overrode the element; fall
+    // back to the mapped system color otherwise (mirrors query_std_color).
+    auto stdColor = [&cfg](const GUID& what) -> COLORREF {
+        t_ui_color c = 0;
+        if (cfg->query_color(what, c)) {
+            return c;
+        }
+        const int idx = ui_color_to_sys_color_index(what);
+        return idx < 0 ? 0 : GetSysColor(idx);
+    };
+    return buildTheme(stdColor(ui_color_background), stdColor(ui_color_text),
+                      stdColor(ui_color_selection),
+                      cfg->query_font(ui_font_default));
 }
 
 }  // namespace hemusic::ui
