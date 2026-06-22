@@ -118,6 +118,8 @@ add_library(foo_hemusic SHARED
   src/ui/d2d.cpp
   src/ui/image_cache.cpp
   src/ui/main_panel.cpp
+  src/ui/theme.cpp
+  src/ui/pages/discover_page.cpp
   src/ui/pages/login_dlg.cpp)
 target_compile_features(foo_hemusic PRIVATE cxx_std_20)
 # /utf-8 is applied globally above (add_compile_options); the dialog's Chinese

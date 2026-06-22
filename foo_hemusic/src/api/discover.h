@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <string_view>
 #include <vector>
 
@@ -7,6 +8,7 @@
 
 #include "api/album.h"
 #include "api/mv.h"
+#include "api/platforms.h"
 #include "api/playlist.h"
 #include "api/song.h"
 #include "net/json_codec.h"
@@ -84,6 +86,26 @@ inline DiscoverPage parseDiscoverPage(const boost::json::value& body,
     page.featuredMvs = discover_detail::mapAll(o.if_contains("featured_mvs"),
                                                platformId, &parseMvInfo);
     return page;
+}
+
+// PlatformFeatureSupportFlag.getDiscoverPage (online_platform.dart: 1 << 33).
+// A platform must advertise this bit (and be available) to serve
+// /v1/page/discover.
+inline constexpr unsigned long long kFeatureGetDiscoverPage = 1ULL << 33;
+
+// Picks the platform whose discover page the panel loads, mirroring the Flutter
+// HomeDiscoverController (_mapGlobalPlatforms filter + _resolveSelectedPlatform
+// orElse first): the first platform that is available() AND supports
+// getDiscoverPage. nullopt when none qualifies (Flutter throws StateError; the
+// caller renders an empty/error state instead).
+inline std::optional<PlatformInfo> resolveDiscoverPlatform(
+    const std::vector<PlatformInfo>& platforms) {
+    for (const auto& p : platforms) {
+        if (p.available() && p.supports(kFeatureGetDiscoverPage)) {
+            return p;
+        }
+    }
+    return std::nullopt;
 }
 
 }  // namespace hemusic

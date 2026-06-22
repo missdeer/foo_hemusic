@@ -1,17 +1,34 @@
 #include "api/discover.h"
 #include "api/mv.h"
+#include "api/platforms.h"
+
+#include <utility>
+#include <vector>
 
 #include <boost/json.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 using hemusic::DiscoverPage;
+using hemusic::kFeatureGetDiscoverPage;
 using hemusic::MvInfo;
 using hemusic::parseDiscoverPage;
 using hemusic::parseMvInfo;
+using hemusic::PlatformInfo;
+using hemusic::resolveDiscoverPlatform;
 
 namespace {
 
 boost::json::value parse(const char* json) { return boost::json::parse(json); }
+
+// status==1 => available(); flag carries (or omits) the getDiscoverPage bit.
+PlatformInfo plat(std::string id, long long status, unsigned long long flag) {
+    PlatformInfo p;
+    p.id = std::move(id);
+    p.name = p.id;
+    p.status = status;
+    p.featureSupportFlag = flag;
+    return p;
+}
 
 }  // namespace
 
@@ -125,4 +142,38 @@ TEST_CASE("discover degrades a missing or non-array section to an empty list") {
     // A non-array section is also tolerated.
     auto page2 = parseDiscoverPage(parse(R"({"new_albums": "oops"})"), "qq");
     CHECK(page2.newAlbums.empty());
+}
+
+TEST_CASE("resolveDiscoverPlatform returns nullopt for an empty list") {
+    CHECK_FALSE(resolveDiscoverPlatform({}).has_value());
+}
+
+TEST_CASE("resolveDiscoverPlatform skips platforms lacking getDiscoverPage") {
+    // Available but the discover bit is clear (only some other feature set).
+    std::vector<PlatformInfo> platforms = {
+        plat("a", 1, 1ULL << 0), plat("b", 1, kFeatureGetDiscoverPage >> 1)};
+    CHECK_FALSE(resolveDiscoverPlatform(platforms).has_value());
+}
+
+TEST_CASE(
+    "resolveDiscoverPlatform skips supporting-but-unavailable platforms") {
+    // Carries the discover bit but status != 1, so available() is false.
+    std::vector<PlatformInfo> platforms = {
+        plat("a", 0, kFeatureGetDiscoverPage)};
+    CHECK_FALSE(resolveDiscoverPlatform(platforms).has_value());
+}
+
+TEST_CASE(
+    "resolveDiscoverPlatform picks the first available + supporting one") {
+    // First two are disqualified (unavailable / unsupported); "c" qualifies and
+    // "d" also qualifies but must not win -- first match, mirroring Flutter's
+    // available.first.
+    std::vector<PlatformInfo> platforms = {
+        plat("a", 0, kFeatureGetDiscoverPage),       // unavailable
+        plat("b", 1, 1ULL),                          // available, no discover
+        plat("c", 1, kFeatureGetDiscoverPage | 1U),  // qualifies
+        plat("d", 1, kFeatureGetDiscoverPage)};      // qualifies but later
+    auto sel = resolveDiscoverPlatform(platforms);
+    REQUIRE(sel.has_value());
+    CHECK(sel->id == "c");
 }

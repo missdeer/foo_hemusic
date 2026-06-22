@@ -1,10 +1,9 @@
-// foo_hemusic main UI panel (PLAN.md Phase 4 step 1 + d2d integration).
-// Minimal ui_element_v2 that registers an empty panel users can drag into the
-// Default UI layout editor. Paints a centered "HE-Music" placeholder via
-// Direct2D + DirectWrite, taking the background / text color from the fb2k
-// host theme. Doubles as the smoke test for the d2d module: render-target
-// lifecycle, device-loss handling and theme repaints all run through here
-// before any widgets ride on top.
+// foo_hemusic main UI panel (PLAN.md Phase 4: ui_element host + discover_page).
+// ui_element_v2 users drag into the Default UI layout editor. Owns the d2d
+// canvas + theme snapshot and hosts the DiscoverPage, which loads /v1/platforms
+// + /v1/page/discover on a worker thread and renders the new-songs list.
+// Colors / fonts follow the fb2k host theme (PLAN §3.5) and repaint on theme
+// changes; the worker signals completion via DiscoverPage::kDoneMessage.
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -15,19 +14,17 @@
 #include <windows.h>
 
 #include <d2d1.h>
-#include <dwrite.h>
-#include <wrl/client.h>
 
 #include <memory>
 #include <utility>
 
 #include "ui/d2d.h"
+#include "ui/pages/discover_page.h"
+#include "ui/theme.h"
 
 namespace hemusic::ui {
 
 namespace {
-
-using Microsoft::WRL::ComPtr;
 
 // {7E2D6FB8-39A4-4D2E-B2C9-1B5E7F0B6E11}  -- unique per element, do not reuse.
 constexpr GUID kGuidMainPanel = {
@@ -37,36 +34,6 @@ constexpr GUID kGuidMainPanel = {
     {0xb2, 0xc9, 0x1b, 0x5e, 0x7f, 0x0b, 0x6e, 0x11}};
 
 constexpr wchar_t kWindowClass[] = L"foo_hemusic_main_panel";
-constexpr wchar_t kPlaceholderText[] = L"HE-Music";
-constexpr wchar_t kPlaceholderFont[] = L"Segoe UI";
-constexpr float kPlaceholderFontSize = 18.0F;
-constexpr float kColorScale = 255.0F;
-
-D2D1_COLOR_F toColorF(COLORREF c) {
-    return D2D1::ColorF(static_cast<float>(GetRValue(c)) / kColorScale,
-                        static_cast<float>(GetGValue(c)) / kColorScale,
-                        static_cast<float>(GetBValue(c)) / kColorScale, 1.0F);
-}
-
-ComPtr<IDWriteTextFormat> placeholderTextFormat() {
-    static ComPtr<IDWriteTextFormat> g = [] {
-        ComPtr<IDWriteTextFormat> tf;
-        IDWriteFactory* dw = d2d::dwriteFactory();
-        if (dw == nullptr) {
-            return tf;
-        }
-        dw->CreateTextFormat(
-            kPlaceholderFont, nullptr, DWRITE_FONT_WEIGHT_NORMAL,
-            DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-            kPlaceholderFontSize, L"", tf.GetAddressOf());
-        if (tf) {
-            tf->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-            tf->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-        }
-        return tf;
-    }();
-    return g;
-}
 
 class MainPanel : public ui_element_instance {
    public:
@@ -94,6 +61,8 @@ class MainPanel : public ui_element_instance {
             0, 0, parent, nullptr, core_api::get_my_instance(), this);
         if (m_hwnd != nullptr) {
             m_canvas = std::make_unique<d2d::HwndCanvas>(m_hwnd);
+            m_discover.attach(m_hwnd);
+            m_discover.load();
         }
     }
 
@@ -154,6 +123,9 @@ class MainPanel : public ui_element_instance {
                         self->m_canvas->resize(LOWORD(lp), HIWORD(lp));
                     }
                     return 0;
+                case DiscoverPage::kDoneMessage:
+                    self->m_discover.onHostMessage(msg, wp, lp);
+                    return 0;
                 case WM_DESTROY:
                     if (self->m_canvas) {
                         self->m_canvas->discard();
@@ -173,31 +145,17 @@ class MainPanel : public ui_element_instance {
             ValidateRect(m_hwnd, nullptr);
             return;
         }
-        const D2D1_COLOR_F bg =
-            toColorF(m_callback->query_std_color(ui_color_background));
-        const D2D1_COLOR_F fg =
-            toColorF(m_callback->query_std_color(ui_color_text));
+        const Theme theme = themeFromCallback(m_callback.get_ptr());
         m_canvas->paint([&](ID2D1HwndRenderTarget* rt) {
-            rt->Clear(bg);
-            ComPtr<IDWriteTextFormat> tf = placeholderTextFormat();
-            if (!tf) {
-                return;
-            }
-            ComPtr<ID2D1SolidColorBrush> brush;
-            if (FAILED(rt->CreateSolidColorBrush(fg, brush.GetAddressOf()))) {
-                return;
-            }
-            const D2D1_SIZE_F size = rt->GetSize();
-            const auto rect = D2D1::RectF(0.0F, 0.0F, size.width, size.height);
-            rt->DrawTextW(kPlaceholderText,
-                          static_cast<UINT32>(std::wcslen(kPlaceholderText)),
-                          tf.Get(), rect, brush.Get());
+            rt->Clear(theme.background);
+            m_discover.paint(rt, theme, rt->GetSize());
         });
         ValidateRect(m_hwnd, nullptr);
     }
 
     HWND m_hwnd = nullptr;
     std::unique_ptr<d2d::HwndCanvas> m_canvas;
+    DiscoverPage m_discover;
     ui_element_config::ptr m_config;
     ui_element_instance_callback::ptr m_callback;
 };
