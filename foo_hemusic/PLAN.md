@@ -270,7 +270,10 @@ foo_hemusic/
    - ~~[HEMUSIC-32](https://jira.ismisv.com/browse/HEMUSIC-32) — **UI 全局 per-monitor DPI (PMv2) 感知**~~ ✅ 已完成（尊重宿主感知 + per-window DPI 贯通 `HwndCanvas` render target；不强行声明进程 PMv2——组件无法覆盖宿主锁定的感知级别），详见 [`DONE.md`](./DONE.md#phase-5--ui-业务页面)。
 2. ~~[HEMUSIC-13](https://jira.ismisv.com/browse/HEMUSIC-13) — **发现页** 完整 4 段（新歌 / 新专 / 精选歌单 / 精选 MV）~~ ✅ 已完成（4 段 + 网格布局 + 纵向滚动；封面占位框），详见 [`DONE.md`](./DONE.md#phase-5--ui-业务页面)。
    - ~~[HEMUSIC-31](https://jira.ismisv.com/browse/HEMUSIC-31) — **发现页封面异步加载**~~ ✅ 已完成（ImageCache 加固 + cover_cache initquit 单例 + paint 接线真实封面 + hemusic_ui_core 测试库），详见 [`DONE.md`](./DONE.md#phase-5--ui-业务页面)。
-3. [HEMUSIC-14](https://jira.ismisv.com/browse/HEMUSIC-14) — **搜索**（顶栏输入 + 联想浮层 + 综合 / 分类 Tab）
+3. ~~[HEMUSIC-14](https://jira.ismisv.com/browse/HEMUSIC-14) — **搜索 · slice 1：综合搜索骨架 + 顶部 Tab 栏（发现/搜索）**~~ ✅ 已完成（main_panel 顶部 Tab 栏 + DiscoverPage/SearchPage 双 windowless 页托管 + Win32 EDIT 搜索框 + 综合搜索 best_match/5 段；抽 `section_render` 共享渲染；平台位 comprehensiveSearch 修正），详见 [`DONE.md`](./DONE.md#phase-5--ui-业务页面)。**拆出后续**：
+   - [ ] [HEMUSIC-33](https://jira.ismisv.com/browse/HEMUSIC-33) — 联想浮层（`/v1/search/suggest`，输入防抖 + 浮层）
+   - [ ] [HEMUSIC-34](https://jira.ismisv.com/browse/HEMUSIC-34) — 分类 Tab 切换 + 翻页（`/v1/{type}/search?page_index=&page_size=`）
+   - [ ] [HEMUSIC-35](https://jira.ismisv.com/browse/HEMUSIC-35) — 热搜词 / 默认搜索词（`/v1/search/hotkey`、`/v1/search/default`）
 4. [HEMUSIC-15](https://jira.ismisv.com/browse/HEMUSIC-15) — **歌单详情**（banner + 歌曲列表 + 全部入列）
 5. [HEMUSIC-16](https://jira.ismisv.com/browse/HEMUSIC-16) — **专辑详情**（同歌单详情结构）
 6. [HEMUSIC-17](https://jira.ismisv.com/browse/HEMUSIC-17) — **歌手详情**（歌曲 / 专辑 / MV Tab，分页加载）

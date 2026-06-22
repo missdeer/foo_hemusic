@@ -12,6 +12,7 @@
 #include "api/artist.h"
 #include "api/discover.h"  // reuses discover_detail::mapAll
 #include "api/mv.h"
+#include "api/platforms.h"
 #include "api/playlist.h"
 #include "api/song.h"
 #include "net/json_codec.h"
@@ -37,6 +38,28 @@
 // searchMusic / `_extractList`, which return the raw list unfiltered.
 
 namespace hemusic {
+
+// PlatformFeatureSupportFlag.comprehensiveSearch (online_platform.dart: 1 <<
+// 0). The flag the Flutter comprehensive search gates on
+// (online_search_models.dart `SearchType.comprehensive ->
+// comprehensiveSearch`). The per-type search flags (searchSong/Album/... are
+// 1<<1..1<<5) gate the category sub-tabs, a follow-up.
+inline constexpr unsigned long long kFeatureComprehensiveSearch = 1ULL << 0;
+
+// Picks the platform the comprehensive search runs against: the first platform
+// that is available() AND supports comprehensiveSearch, mirroring
+// resolveDiscoverPlatform (discover.h). nullopt when none qualifies (caller
+// renders an error state). The per-platform search sub-tabs (kuwo / netease /
+// ...) are a follow-up; the skeleton always uses this default.
+inline std::optional<PlatformInfo> resolveSearchPlatform(
+    const std::vector<PlatformInfo>& platforms) {
+    for (const auto& p : platforms) {
+        if (p.available() && p.supports(kFeatureComprehensiveSearch)) {
+            return p;
+        }
+    }
+    return std::nullopt;
+}
 
 template <typename T>
 struct SearchSection {

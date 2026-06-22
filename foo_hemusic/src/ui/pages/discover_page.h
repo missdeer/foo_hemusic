@@ -75,8 +75,11 @@ class DiscoverPage {
     void paint(ID2D1RenderTarget* rt, const Theme& theme, D2D1_SIZE_F size);
 
     // Scrolls the content by a raw WM_MOUSEWHEEL delta (already the signed
-    // short from GET_WHEEL_DELTA_WPARAM). UI thread only.
-    void onMouseWheel(int wheelDelta);
+    // short from GET_WHEEL_DELTA_WPARAM). `topInsetDip` is the non-scrolling
+    // chrome height (the host's tab bar) reserved above this content, so the
+    // scroll clamp matches the reduced viewport paint() draws into. UI thread
+    // only.
+    void onMouseWheel(int wheelDelta, float topInsetDip);
 
    private:
     enum class Status : std::uint8_t {
