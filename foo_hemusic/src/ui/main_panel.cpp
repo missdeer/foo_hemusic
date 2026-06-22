@@ -149,6 +149,7 @@ class MainPanel : public ui_element_instance {
                     self->m_discover.onMouseWheel(GET_WHEEL_DELTA_WPARAM(wp));
                     return 0;
                 case DiscoverPage::kDoneMessage:
+                case DiscoverPage::kCoverReadyMessage:
                     self->m_discover.onHostMessage(msg, wp, lp);
                     return 0;
                 case WM_HEMUSIC_AUTH_CHANGED:

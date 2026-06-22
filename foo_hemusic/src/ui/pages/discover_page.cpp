@@ -24,7 +24,9 @@
 #include "net/api_client.h"
 #include "net/http_client.h"
 #include "net/url_codec.h"
+#include "ui/cover_cache.h"
 #include "ui/d2d.h"
+#include "ui/image_cache.h"
 #include "ui/pages/discover_layout.h"
 
 // No SDK headers here: Session / ApiClient / HttpClient are SDK-free and d2d /
@@ -55,6 +57,7 @@ constexpr float kCardInnerGap = 4.0F;
 constexpr float kSubGap = 2.0F;  // title line -> sub line
 constexpr float kVideoAspect = 9.0F / 16.0F;
 constexpr float kStrokeWidth = 1.0F;
+constexpr float kRowThumbPad = 4.0F;  // song-row cover inset (top+bottom)
 
 bool isHttpOk(const HttpResponse& r) {
     return r.ok && r.status >= kHttpOkMin && r.status < kHttpOkMax;
@@ -122,6 +125,33 @@ void drawText(ID2D1RenderTarget* rt, IDWriteTextFormat* tf,
                   brush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
 }
 
+// Draws `bmp` to fill `dst` without distortion: center-crops the source to the
+// destination's aspect ratio (cover-fit). Music covers are square but the
+// destination may be 16:9 (MV cards), so a plain stretch would skew them.
+void drawCoverBitmap(ID2D1RenderTarget* rt, ID2D1Bitmap* bmp,
+                     const D2D1_RECT_F& dst) {
+    const D2D1_SIZE_F bs = bmp->GetSize();
+    const float tw = dst.right - dst.left;
+    const float th = dst.bottom - dst.top;
+    if (bs.width <= 0.0F || bs.height <= 0.0F || tw <= 0.0F || th <= 0.0F) {
+        return;
+    }
+    const float targetAspect = tw / th;
+    const float srcAspect = bs.width / bs.height;
+    D2D1_RECT_F srcRect{};
+    if (srcAspect > targetAspect) {  // source wider: crop left/right
+        const float w = bs.height * targetAspect;
+        const float x = (bs.width - w) * 0.5F;
+        srcRect = D2D1::RectF(x, 0.0F, x + w, bs.height);
+    } else {  // source taller: crop top/bottom
+        const float h = bs.width / targetAspect;
+        const float y = (bs.height - h) * 0.5F;
+        srcRect = D2D1::RectF(0.0F, y, bs.width, y + h);
+    }
+    rt->DrawBitmap(bmp, dst, 1.0F, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
+                   &srcRect);
+}
+
 // Bundles the per-paint Direct2D resources + scroll/viewport so the section
 // loops below stay short. Translates content rects by -scrollY and culls
 // off-viewport items.
@@ -132,6 +162,9 @@ struct Renderer {
     ComPtr<IDWriteTextFormat> subFmt;
     ComPtr<ID2D1SolidColorBrush> textBrush;
     ComPtr<ID2D1SolidColorBrush> subBrush;
+    ImageCache* covers = nullptr;      // shared cover cache (may be null)
+    const void* subscriber = nullptr;  // owner key for cover listeners
+    HWND host = nullptr;               // posted to when a cover finishes
     float scrollY = 0;
     float viewportH = 0;
     float rowTitleH = 0;
@@ -149,11 +182,39 @@ struct Renderer {
             drawText(rt, titleFmt.Get(), label, textBrush.Get(), sr);
         }
     }
+    // Real cover if cached, else queues an async fetch and draws a placeholder
+    // box until kCoverReadyMessage triggers a repaint. The makeBitmap upload is
+    // per-paint (device-dependent resource, never cached across targets) --
+    // fine for the discover page's discrete repaints.
+    void drawCover(const D2D1_RECT_F& dst, const std::string& url) const {
+        if (covers != nullptr && !url.empty()) {
+            const HWND h = host;
+            ComPtr<IWICBitmapSource> src =
+                covers->request(url, subscriber, [h] {
+                    PostMessageW(h, DiscoverPage::kCoverReadyMessage, 0, 0);
+                });
+            if (src) {
+                ComPtr<ID2D1Bitmap> bmp = d2d::makeBitmap(rt, src.Get());
+                if (bmp) {
+                    drawCoverBitmap(rt, bmp.Get(), dst);
+                    return;
+                }
+            }
+        }
+        rt->DrawRectangle(dst, subBrush.Get(), kStrokeWidth);
+    }
     void songRow(const D2D1_RECT_F& r, int index, const std::wstring& name,
-                 const std::wstring& artist) const {
+                 const std::wstring& artist,
+                 const std::string& coverUrl) const {
         drawText(rt, subFmt.Get(), std::to_wstring(index), subBrush.Get(),
                  D2D1::RectF(r.left, r.top, r.left + kIndexWidth, r.bottom));
-        const float tx = r.left + kIndexWidth;
+        const float thumbX = r.left + kIndexWidth;
+        const float side =
+            std::max(0.0F, (r.bottom - r.top) - 2.0F * kRowThumbPad);
+        drawCover(D2D1::RectF(thumbX, r.top + kRowThumbPad, thumbX + side,
+                              r.bottom - kRowThumbPad),
+                  coverUrl);
+        const float tx = thumbX + side + kCardInnerGap;
         const float titleBottom = r.top + kSubGap + rowTitleH;
         drawText(rt, rowFmt.Get(), name, textBrush.Get(),
                  D2D1::RectF(tx, r.top + kSubGap, r.right, titleBottom));
@@ -161,13 +222,11 @@ struct Renderer {
                  D2D1::RectF(tx, titleBottom, r.right, r.bottom));
     }
     void card(const D2D1_RECT_F& r, bool square, const std::wstring& title,
-              const std::wstring& sub) const {
+              const std::wstring& sub, const std::string& coverUrl) const {
         const float w = r.right - r.left;
         const float coverH = square ? w : w * kVideoAspect;
-        // Cover placeholder box (real cover art arrives with the follow-up
-        // image-loading ticket).
-        rt->DrawRectangle(D2D1::RectF(r.left, r.top, r.right, r.top + coverH),
-                          subBrush.Get(), kStrokeWidth);
+        drawCover(D2D1::RectF(r.left, r.top, r.right, r.top + coverH),
+                  coverUrl);
         const float ty = r.top + coverH + kCardInnerGap;
         const float titleBottom = ty + rowTitleH;
         drawText(rt, rowFmt.Get(), title, textBrush.Get(),
@@ -190,16 +249,17 @@ void drawSongSection(const Renderer& rn, const SectionLayout& sl,
             continue;
         }
         rn.songRow(s, static_cast<int>(i) + 1, utf8ToWide(songs.at(i).name),
-                   utf8ToWide(songArtistText(songs.at(i))));
+                   utf8ToWide(songArtistText(songs.at(i))), songs.at(i).cover);
     }
 }
 
-// Draws a wrapped card grid: titleFn / subFn map each item to its display
-// strings. Keeps paint() flat (one call per section).
-template <class T, class TitleFn, class SubFn>
+// Draws a wrapped card grid: titleFn / subFn / coverFn map each item to its
+// display strings + cover URL. Keeps paint() flat (one call per section).
+template <class T, class TitleFn, class SubFn, class CoverFn>
 void drawCardSection(const Renderer& rn, const SectionLayout& sl,
                      const std::vector<T>& items, const std::wstring& label,
-                     bool square, TitleFn titleFn, SubFn subFn) {
+                     bool square, TitleFn titleFn, SubFn subFn,
+                     CoverFn coverFn) {
     if (!sl.present) {
         return;
     }
@@ -211,7 +271,7 @@ void drawCardSection(const Renderer& rn, const SectionLayout& sl,
             continue;
         }
         rn.card(s, square, utf8ToWide(titleFn(items.at(i))),
-                utf8ToWide(subFn(items.at(i))));
+                utf8ToWide(subFn(items.at(i))), coverFn(items.at(i)));
     }
 }
 
@@ -247,6 +307,14 @@ DiscoverPage::~DiscoverPage() {
     // timeout (bounded, like login_dlg's teardown).
     if (worker_.joinable()) {
         worker_.join();
+    }
+    // Then stop cover notifications addressed to us. Order matters: the worker
+    // never touches the cache, but unsubscribing only after the join keeps the
+    // teardown sequence unambiguous. Late cover listeners only PostMessage a
+    // dead HWND anyway (harmless), but dropping the subscription stops the
+    // cache from holding our stale listeners.
+    if (ImageCache* cache = coverCache()) {
+        cache->unsubscribe(this);
     }
 }
 
@@ -346,10 +414,13 @@ void DiscoverPage::worker() {
 }
 
 bool DiscoverPage::onHostMessage(UINT msg, WPARAM /*wp*/, LPARAM /*lp*/) {
-    if (msg != kDoneMessage) {
+    if (msg == kDoneMessage) {
+        scrollY_ = 0.0F;  // UI thread: fresh data starts at the top
+    } else if (msg != kCoverReadyMessage) {
         return false;
     }
-    scrollY_ = 0.0F;  // UI thread: fresh data starts at the top
+    // A cover that just finished loading must repaint in place -- only fresh
+    // page data (kDoneMessage) resets the scroll above.
     if (host_ != nullptr) {
         InvalidateRect(host_, nullptr, FALSE);
     }
@@ -422,20 +493,27 @@ void DiscoverPage::paint(ID2D1RenderTarget* rt, const Theme& theme,
     rn.scrollY = scrollY_;
     rn.viewportH = size.height;
     rn.rowTitleH = theme.rowTitleSize + kSubGap;
+    rn.covers =
+        coverCache();  // null before init / after shutdown -> placeholder
+    rn.subscriber = this;
+    rn.host = host_;
 
     drawSongSection(rn, layout.songs, songs_);
     drawCardSection(
         rn, layout.albums, albums_, L"新碟上架", /*square=*/true,
         [](const AlbumInfo& a) { return a.name; },
-        [](const AlbumInfo& a) { return artistNamesText(a.artists); });
+        [](const AlbumInfo& a) { return artistNamesText(a.artists); },
+        [](const AlbumInfo& a) { return a.cover; });
     drawCardSection(
         rn, layout.playlists, playlists_, L"精选歌单", /*square=*/true,
         [](const PlaylistInfo& p) { return p.name; },
-        [](const PlaylistInfo& p) { return p.songCount + " 首"; });
+        [](const PlaylistInfo& p) { return p.songCount + " 首"; },
+        [](const PlaylistInfo& p) { return p.cover; });
     drawCardSection(
         rn, layout.mvs, mvs_, L"精选 MV", /*square=*/false,
         [](const MvInfo& v) { return v.name; },
-        [](const MvInfo& v) { return v.creator; });
+        [](const MvInfo& v) { return v.creator; },
+        [](const MvInfo& v) { return v.cover; });
 }
 
 }  // namespace hemusic::ui

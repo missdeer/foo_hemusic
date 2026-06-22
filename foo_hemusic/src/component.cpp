@@ -5,6 +5,7 @@
 #include "auth/device_info.h"
 #include "core/config.h"
 #include "core/session.h"
+#include "ui/cover_cache.h"
 
 // foo_hemusic — minimal foobar2000 v2 component scaffold (PLAN.md Phase 0).
 // Registers version info + an initquit so foobar2000 lists the component and
@@ -40,9 +41,13 @@ class hemusic_initquit : public initquit {
             hemusic::makeDeviceInfo(hemusic::config::deviceId(),
                                     hemusic::queryComputerName(),
                                     FOO_HEMUSIC_VERSION));
+        // Owns the shared cover ImageCache here (not a function-local static)
+        // so its worker pool is stopped + joined in on_quit, on the main
+        // thread, before the DLL detaches and the d2d/WIC statics tear down.
+        hemusic::ui::initCoverCache();
         console::print("foo_hemusic " FOO_HEMUSIC_VERSION " loaded.");
     }
-    void on_quit() override {}
+    void on_quit() override { hemusic::ui::shutdownCoverCache(); }
 };
 
 FB2K_SERVICE_FACTORY(hemusic_initquit);

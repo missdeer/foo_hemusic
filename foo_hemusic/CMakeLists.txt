@@ -111,12 +111,24 @@ target_compile_features(hemusic_core PUBLIC cxx_std_20)
 target_compile_definitions(hemusic_core PUBLIC UNICODE _UNICODE)
 target_link_libraries(hemusic_core PUBLIC Boost::json PRIVATE rpcrt4 winhttp crypt32)
 
+# --- UI core (Direct2D/WIC + cover cache, SDK-independent, unit-testable) -----
+# d2d / image_cache / cover_cache touch no foobar2000 SDK headers, so they live
+# in their own lib that both the DLL and the test exe link. The Direct2D / WIC
+# system libs are PUBLIC so consumers (notably hemusic_tests) inherit them.
+add_library(hemusic_ui_core STATIC
+  src/ui/d2d.cpp
+  src/ui/image_cache.cpp
+  src/ui/cover_cache.cpp)
+target_include_directories(hemusic_ui_core PUBLIC src)
+target_compile_features(hemusic_ui_core PUBLIC cxx_std_20)
+target_compile_definitions(hemusic_ui_core PUBLIC UNICODE _UNICODE)
+target_link_libraries(hemusic_ui_core
+  PUBLIC hemusic_core d2d1 dwrite windowscodecs ole32 user32)
+
 # --- The component DLL -------------------------------------------------------
 add_library(foo_hemusic SHARED
   src/component.cpp
   src/core/config.cpp
-  src/ui/d2d.cpp
-  src/ui/image_cache.cpp
   src/ui/main_panel.cpp
   src/ui/theme.cpp
   src/ui/pages/discover_page.cpp
@@ -128,9 +140,9 @@ target_compile_features(foo_hemusic PRIVATE cxx_std_20)
 target_link_libraries(foo_hemusic PRIVATE
   fb2k_sdk
   hemusic_core
+  hemusic_ui_core  # d2d / image_cache / cover_cache (+ d2d1/dwrite/windowscodecs)
   "${_fb2k_shared}"
-  shlwapi comctl32 uxtheme gdi32 user32 ole32 oleaut32 shell32 advapi32 comdlg32
-  d2d1 dwrite windowscodecs)
+  shlwapi comctl32 uxtheme gdi32 user32 ole32 oleaut32 shell32 advapi32 comdlg32)
 
 # foobar2000_get_interface lives in component_client (inside fb2k_sdk) and is
 # referenced by nothing in our code, so force-keep its export.
@@ -170,7 +182,10 @@ if(FOO_HEMUSIC_TESTS)
     tests/platforms_test.cpp
     tests/url_codec_test.cpp
     tests/hemusic_url_test.cpp
-    tests/url_resolver_test.cpp)
-  target_link_libraries(hemusic_tests PRIVATE hemusic_core Catch2::Catch2WithMain)
+    tests/url_resolver_test.cpp
+    tests/image_cache_test.cpp)
+  # hemusic_ui_core brings ImageCache (+ its Direct2D/WIC libs, PUBLIC).
+  target_link_libraries(hemusic_tests
+    PRIVATE hemusic_core hemusic_ui_core Catch2::Catch2WithMain)
   add_test(NAME hemusic_tests COMMAND hemusic_tests)
 endif()

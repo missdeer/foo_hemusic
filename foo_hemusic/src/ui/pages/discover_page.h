@@ -3,14 +3,16 @@
 // Discover page (HEMUSIC-13). Loads /v1/platforms -> resolves the
 // discover-capable platform -> /v1/page/discover and renders all four sections:
 // the new-songs list plus new-album / featured-playlist / featured-MV card
-// grids, with vertical mouse-wheel scrolling. Cover art is a placeholder box
-// for now; real async cover loading is HEMUSIC-31.
+// grids, with vertical mouse-wheel scrolling. Cover art loads asynchronously
+// through the shared cover ImageCache (HEMUSIC-31); cells show a placeholder
+// box until their bitmap arrives.
 //
 // Hosted inside MainPanel's HWND + render target: it owns no window and no
 // canvas. MainPanel forwards paint / the done-message; DiscoverPage runs the
 // blocking fetch on a worker thread and signals completion via PostMessage to
 // the host (mirroring login_dlg's worker model). The dtor joins the worker
-// before any member is torn down, so worker writes stay valid throughout.
+// (then unsubscribes from the cover cache) before any member is torn down, so
+// worker writes stay valid throughout.
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -40,6 +42,13 @@ class DiscoverPage {
     // forwards it to onHostMessage so the page repaints with fresh state.
     static constexpr UINT kDoneMessage = WM_APP + 1;
 
+    // Posted by a cover-cache worker when a requested cover finishes loading.
+    // Distinct from kDoneMessage because this must repaint WITHOUT resetting
+    // the scroll position (kDoneMessage means "fresh page, jump to top").
+    // WM_APP+1/ +2 are taken (kDoneMessage / MainPanel's auth-changed), so this
+    // is +3.
+    static constexpr UINT kCoverReadyMessage = WM_APP + 3;
+
     DiscoverPage() = default;
     ~DiscoverPage();
 
@@ -56,8 +65,9 @@ class DiscoverPage {
     // the worker.
     void load();
 
-    // Handles a host message. Returns true when it consumed kDoneMessage (the
-    // worker finished): repaints the host. Other messages are ignored.
+    // Handles a host message. Consumes kDoneMessage (worker finished -> repaint
+    // from the top) and kCoverReadyMessage (a cover loaded -> repaint in
+    // place), returning true for either. Other messages are ignored.
     bool onHostMessage(UINT msg, WPARAM wp, LPARAM lp);
 
     // Draws the current state into the host's render target. Called from

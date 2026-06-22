@@ -7,9 +7,9 @@
 // Lifecycle:
 //   request(url, this, listener)
 //     -> Loaded   : returns the bitmap, marks MRU, listener ignored.
-//     -> Failed   : returns null, listener ignored. Re-requesting *will*
-//                   refetch only after eviction (Failed entries occupy LRU
-//                   slots like Loaded).
+//     -> Failed   : returns null, listener ignored. A Failed entry is
+//                   re-fetched once it is older than the failed-TTL (or after
+//                   eviction); within the TTL it stays a fast negative cache.
 //     -> Pending  : returns null, listener queued and fired once when the
 //                   fetch completes (success OR failure). Caller redraws and
 //                   re-asks via get() / request().
@@ -39,6 +39,7 @@
 #include <wrl/client.h>
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -64,11 +65,22 @@ class ImageCache {
     // per pending-request resolution per subscriber. Caller redraws.
     using Listener = std::function<void()>;
 
+    // Monotonic time source for the Failed-entry TTL. Injectable so the TTL
+    // path is unit-testable without sleeping; defaults to steady_clock::now.
+    using Clock = std::function<std::chrono::steady_clock::time_point()>;
+
     static constexpr std::size_t kDefaultCapacity = 128;
     static constexpr std::size_t kDefaultWorkers = 4;
+    // A Failed entry is re-fetched once it is older than this. Without it a
+    // visible cover that transiently fails stays blank until LRU eviction --
+    // which never comes for an always-visible card.
+    static constexpr std::chrono::seconds kDefaultFailedTtl{30};
 
-    explicit ImageCache(FetchFn fetch, std::size_t capacity = kDefaultCapacity,
-                        std::size_t workerCount = kDefaultWorkers);
+    explicit ImageCache(
+        FetchFn fetch, std::size_t capacity = kDefaultCapacity,
+        std::size_t workerCount = kDefaultWorkers,
+        std::chrono::steady_clock::duration failedTtl = kDefaultFailedTtl,
+        Clock clock = {});
     ~ImageCache();
 
     ImageCache(const ImageCache&) = delete;
@@ -113,14 +125,21 @@ class ImageCache {
         std::vector<Subscriber> subscribers;
         std::list<std::string>::iterator lruIt;  // valid iff in lru_
         bool inLru = false;
+        std::chrono::steady_clock::time_point failedAt;  // valid iff Failed
     };
 
     void workerLoop();
     void onFetched(const std::string& url, std::vector<std::uint8_t> bytes);
     void evictIfNeededLocked();
+    // Queue `listener` for `subscriber` on a Pending entry, skipping a repeat
+    // when the same subscriber already has one (paint re-asks every frame).
+    static void addSubscriberLocked(Entry& e, const void* subscriber,
+                                    Listener listener);
 
     FetchFn fetch_;
     std::size_t capacity_;
+    std::chrono::steady_clock::duration failedTtl_;
+    Clock clock_;
 
     // Recursive so the listener invocation in onFetched stays inside the
     // lock without deadlocking on a legitimate (documented-banned, but

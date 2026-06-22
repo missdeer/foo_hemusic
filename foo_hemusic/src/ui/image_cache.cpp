@@ -39,12 +39,31 @@ class ComMtaScope {
 }  // namespace
 
 ImageCache::ImageCache(FetchFn fetch, std::size_t capacity,
-                       std::size_t workerCount)
-    : fetch_(std::move(fetch)), capacity_(capacity) {
+                       std::size_t workerCount,
+                       std::chrono::steady_clock::duration failedTtl,
+                       Clock clock)
+    : fetch_(std::move(fetch)),
+      capacity_(capacity),
+      failedTtl_(failedTtl),
+      clock_(clock ? std::move(clock)
+                   : [] { return std::chrono::steady_clock::now(); }) {
     workers_.reserve(workerCount);
     for (std::size_t i = 0; i < workerCount; ++i) {
         workers_.emplace_back([this] { workerLoop(); });
     }
+}
+
+void ImageCache::addSubscriberLocked(Entry& e, const void* subscriber,
+                                     Listener listener) {
+    if (!listener) {
+        return;
+    }
+    for (const auto& s : e.subscribers) {
+        if (s.key == subscriber) {
+            return;  // this subscriber already waits on this URL; don't pile on
+        }
+    }
+    e.subscribers.push_back({subscriber, std::move(listener)});
 }
 
 ImageCache::~ImageCache() {
@@ -73,23 +92,32 @@ ComPtr<IWICBitmapSource> ImageCache::request(const std::string& url,
             return e.bitmap;
         }
         if (e.state == State::Failed) {
+            if (clock_() - e.failedAt >= failedTtl_) {
+                // Negative-cache entry has aged out: drop its LRU slot and put
+                // it back in flight so a still-visible cover gets another shot.
+                if (e.inLru) {
+                    lru_.erase(e.lruIt);
+                    e.inLru = false;
+                }
+                e.state = State::Pending;
+                addSubscriberLocked(e, subscriber, std::move(listener));
+                queue_.push_back(url);
+                cv_.notify_one();
+                return nullptr;
+            }
             if (e.inLru) {
                 lru_.splice(lru_.begin(), lru_, e.lruIt);
             }
             return nullptr;
         }
-        // Pending: queue the listener if any.
-        if (listener) {
-            e.subscribers.push_back({subscriber, std::move(listener)});
-        }
+        // Pending: queue the listener (deduped per subscriber).
+        addSubscriberLocked(e, subscriber, std::move(listener));
         return nullptr;
     }
     // Brand-new URL: park a Pending entry, queue the fetch, register listener.
     Entry fresh;
     fresh.state = State::Pending;
-    if (listener) {
-        fresh.subscribers.push_back({subscriber, std::move(listener)});
-    }
+    addSubscriberLocked(fresh, subscriber, std::move(listener));
     entries_.emplace(url, std::move(fresh));
     queue_.push_back(url);
     cv_.notify_one();
@@ -213,6 +241,7 @@ void ImageCache::onFetched(const std::string& url,
         e.bitmap = bitmap;
     } else {
         e.state = State::Failed;
+        e.failedAt = clock_();  // start the negative-cache TTL
     }
     lru_.push_front(url);
     e.lruIt = lru_.begin();
