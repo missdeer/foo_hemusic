@@ -137,6 +137,8 @@ add_library(foo_hemusic SHARED
   src/ui/pages/playlist_detail_page.cpp
   src/ui/pages/album_detail_page.cpp
   src/ui/pages/artist_detail_page.cpp
+  src/ui/pages/radio_page.cpp
+  src/ui/pages/radio_detail_page.cpp
   src/ui/pages/login_dlg.cpp)
 target_compile_features(foo_hemusic PRIVATE cxx_std_20)
 # /utf-8 is applied globally above (add_compile_options); the dialog's Chinese
@@ -182,11 +184,13 @@ if(FOO_HEMUSIC_TESTS)
     tests/album_detail_test.cpp
     tests/artist_detail_test.cpp
     tests/ranking_test.cpp
+    tests/playlist_square_test.cpp
     tests/search_test.cpp
     tests/search_layout_test.cpp
     tests/discover_test.cpp
     tests/discover_layout_test.cpp
     tests/detail_layout_test.cpp
+    tests/radio_layout_test.cpp
     tests/platforms_test.cpp
     tests/url_codec_test.cpp
     tests/hemusic_url_test.cpp

@@ -37,6 +37,8 @@
 #include "ui/pages/artist_detail_page.h"
 #include "ui/pages/discover_page.h"
 #include "ui/pages/playlist_detail_page.h"
+#include "ui/pages/radio_detail_page.h"
+#include "ui/pages/radio_page.h"
 #include "ui/pages/search_page.h"
 #include "ui/pages/section_render.h"
 #include "ui/theme.h"
@@ -77,18 +79,36 @@ constexpr float kUnderlineH = 2.0F;       // active-tab underline thickness
 constexpr float kUnderlineInset = 14.0F;  // underline horizontal inset per tab
 constexpr float kRound = 0.5F;            // float->int rounding bias
 
-enum class Tab : std::uint8_t { Discover = 0, Search = 1 };
+enum class Tab : std::uint8_t { Discover = 0, Search = 1, Radio = 2 };
 
-constexpr int kTabCount = 2;
+constexpr int kTabCount = 3;
 
 // Which kind of click capture the main panel is currently routing.
 enum class CaptureOwner : std::uint8_t { None, BackBtn, Page };
 
 nav::PageKind tabToKind(Tab t) {
-    return t == Tab::Search ? nav::PageKind::Search : nav::PageKind::Discover;
+    switch (t) {
+        case Tab::Search:
+            return nav::PageKind::Search;
+        case Tab::Radio:
+            return nav::PageKind::Radio;
+        case Tab::Discover:
+        default:
+            return nav::PageKind::Discover;
+    }
 }
 
-const char* tabLabel(Tab t) { return t == Tab::Search ? "搜索" : "发现"; }
+const char* tabLabel(Tab t) {
+    switch (t) {
+        case Tab::Search:
+            return "搜索";
+        case Tab::Radio:
+            return "电台";
+        case Tab::Discover:
+        default:
+            return "发现";
+    }
+}
 
 // DIP rect of tab `i` within the tab bar.
 D2D1_RECT_F tabRectDip(int i) {
@@ -135,6 +155,8 @@ class MainPanel : public ui_element_instance {
         m_canvas = std::make_unique<d2d::HwndCanvas>(m_hwnd);
         m_discover.attach(m_hwnd);
         m_search.attach(m_hwnd);
+        m_radio.attach(m_hwnd);
+        m_radioDetail.attach(m_hwnd);
         m_playlistDetail.attach(m_hwnd);
         m_albumDetail.attach(m_hwnd);
         m_artistDetail.attach(m_hwnd);
@@ -147,6 +169,8 @@ class MainPanel : public ui_element_instance {
             [this](const ArtistInfo& a) { openArtistDetail(a); });
         m_artistDetail.setOnAlbumOpen(
             [this](const AlbumInfo& a) { openAlbumDetail(a); });
+        m_radio.setOnRadioOpen(
+            [this](const RadioInfo& r) { openRadioDetail(r); });
         m_playlistDetail.setOnEnqueueAll([](const PlaylistInfo& p,
                                             const std::vector<SongInfo>& s) {
             // ★ M1: SDK helper -- popup_message::g_show, NOT
@@ -277,12 +301,29 @@ class MainPanel : public ui_element_instance {
                 case ArtistDetailPage::kCoverReadyMessage:
                     self->m_artistDetail.onHostMessage(msg, wp, lp);
                     return 0;
+                case RadioPage::kDoneMessage:
+                case RadioPage::kCoverReadyMessage:
+                    self->m_radio.onHostMessage(msg, wp, lp);
+                    return 0;
+                case RadioDetailPage::kDoneMessage:
+                case RadioDetailPage::kCoverReadyMessage:
+                    self->m_radioDetail.onHostMessage(msg, wp, lp);
+                    return 0;
                 case WM_HEMUSIC_AUTH_CHANGED:
                     // ★★ S7: discover/search workers may still in-flight after
                     // logout (known, not in HEMUSIC-15 scope); detail pages are
                     // bumped via reset() to drop their workers' writes.
                     self->m_discover.load();
                     self->m_search.reset();
+                    // Radio is lazy-loaded on first Tab::Radio entry. Drop
+                    // any prior fetch's writes via reset, then re-trigger
+                    // load only if the user is currently viewing it (review
+                    // R1-M1: otherwise they sit on "Loading" forever).
+                    self->m_radio.reset();
+                    if (self->m_tab == Tab::Radio) {
+                        self->m_radio.load();
+                    }
+                    self->m_radioDetail.reset();
                     self->m_playlistDetail.reset();
                     self->m_albumDetail.reset();
                     self->m_artistDetail.reset();
@@ -424,6 +465,12 @@ class MainPanel : public ui_element_instance {
         m_playlistDetail.reset();
         m_albumDetail.reset();
         m_artistDetail.reset();
+        m_radioDetail.reset();
+        // Kick off Radio fetch on first switch in (RadioPage::load is a no-op
+        // when a fetch is already in flight or has completed).
+        if (tab == Tab::Radio) {
+            m_radio.load();
+        }
         updateSearchEditVisibility();
         InvalidateRect(m_hwnd, nullptr, FALSE);
     }
@@ -465,6 +512,20 @@ class MainPanel : public ui_element_instance {
         InvalidateRect(m_hwnd, nullptr, FALSE);
     }
 
+    void openRadioDetail(const RadioInfo& r) {
+        nav::PageEntry e;
+        e.kind = nav::PageKind::RadioDetail;
+        e.title = r.name;
+        e.params["id"] = r.id;
+        e.params["platform"] = r.platform;
+        e.params["title"] = r.name;
+        e.params["cover"] = r.cover;
+        m_stack.push(e);
+        m_radioDetail.enter(e);
+        updateSearchEditVisibility();
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+
     void openArtistDetail(const ArtistInfo& a) {
         nav::PageEntry e;
         e.kind = nav::PageKind::ArtistDetail;
@@ -497,6 +558,9 @@ class MainPanel : public ui_element_instance {
                     break;
                 case nav::PageKind::ArtistDetail:
                     m_artistDetail.reset();
+                    break;
+                case nav::PageKind::RadioDetail:
+                    m_radioDetail.reset();
                     break;
                 default:
                     break;
@@ -573,6 +637,10 @@ class MainPanel : public ui_element_instance {
             // Artist detail handles tab switching + album-card clicks
             // internally; it doesn't request capture (no draggable controls).
             m_artistDetail.onLeftDown(xDip, yDip - top);
+        } else if (currentKind() == nav::PageKind::Radio) {
+            // Radio cards push a RadioDetail; no capture needed (no
+            // draggable controls).
+            m_radio.onLeftDown(xDip, yDip - top);
         }
     }
 
@@ -686,6 +754,12 @@ class MainPanel : public ui_element_instance {
             case nav::PageKind::ArtistDetail:
                 m_artistDetail.onMouseWheel(delta, kTabBarH);
                 break;
+            case nav::PageKind::Radio:
+                m_radio.onMouseWheel(delta, kTabBarH);
+                break;
+            case nav::PageKind::RadioDetail:
+                m_radioDetail.onMouseWheel(delta, kTabBarH);
+                break;
             default:
                 break;
         }
@@ -742,8 +816,8 @@ class MainPanel : public ui_element_instance {
         }
         drawBackButton(rt, tf.Get(), textB.Get(), subB.Get());
 
-        static const std::array<const wchar_t*, kTabCount> kLabels = {L"发现",
-                                                                      L"搜索"};
+        static const std::array<const wchar_t*, kTabCount> kLabels = {
+            L"发现", L"搜索", L"电台"};
         for (int i = 0; i < kTabCount; ++i) {
             const bool active = static_cast<int>(m_tab) == i;
             const D2D1_RECT_F r = tabRectDip(i);
@@ -799,6 +873,12 @@ class MainPanel : public ui_element_instance {
                 case nav::PageKind::ArtistDetail:
                     m_artistDetail.paint(rt, theme, pageSize);
                     break;
+                case nav::PageKind::Radio:
+                    m_radio.paint(rt, theme, pageSize);
+                    break;
+                case nav::PageKind::RadioDetail:
+                    m_radioDetail.paint(rt, theme, pageSize);
+                    break;
                 default:
                     break;
             }
@@ -822,6 +902,8 @@ class MainPanel : public ui_element_instance {
     std::unique_ptr<d2d::HwndCanvas> m_canvas;
     DiscoverPage m_discover;
     SearchPage m_search;
+    RadioPage m_radio;
+    RadioDetailPage m_radioDetail;
     PlaylistDetailPage m_playlistDetail;
     AlbumDetailPage m_albumDetail;
     ArtistDetailPage m_artistDetail;

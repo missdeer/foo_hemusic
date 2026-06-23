@@ -1,11 +1,13 @@
 #pragma once
 
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include <boost/json.hpp>
 
+#include "api/platforms.h"
 #include "api/song.h"
 #include "net/json_codec.h"
 
@@ -108,6 +110,24 @@ inline std::vector<RadioGroupInfo> parseRadioGroups(
         out.push_back(parseRadioGroupInfo(item, fallbackPlatform));
     }
     return out;
+}
+
+// PlatformFeatureSupportFlag.listRadios from Flutter
+// `features/online/domain/entities/online_platform.dart`. Mirrors discover.h's
+// kFeatureGetDiscoverPage layout (1ULL bit-shift; uint64 fits the 1<<47 max).
+inline constexpr unsigned long long kFeatureListRadios = 1ULL << 39;
+
+// First available platform that lists radios. Mirrors
+// resolveDiscoverPlatform: degrades to nullopt instead of throwing when no
+// platform qualifies (Flutter throws StateError; caller renders empty state).
+inline std::optional<PlatformInfo> resolveRadioPlatform(
+    const std::vector<PlatformInfo>& platforms) {
+    for (const auto& p : platforms) {
+        if (p.available() && p.supports(kFeatureListRadios)) {
+            return p;
+        }
+    }
+    return std::nullopt;
 }
 
 // `/v1/radio/songs` -> { list: [...] }. Reuses parseSongList, which drops songs

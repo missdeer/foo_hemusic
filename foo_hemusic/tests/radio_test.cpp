@@ -3,12 +3,17 @@
 #include <boost/json.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include "api/platforms.h"
+
+using hemusic::kFeatureListRadios;
 using hemusic::parseRadioGroupInfo;
 using hemusic::parseRadioGroups;
 using hemusic::parseRadioInfo;
 using hemusic::parseRadioSongs;
+using hemusic::PlatformInfo;
 using hemusic::RadioGroupInfo;
 using hemusic::RadioInfo;
+using hemusic::resolveRadioPlatform;
 
 namespace {
 
@@ -112,5 +117,40 @@ TEST_CASE("parseRadioSongs reads list and drops unplayable songs") {
     }
     SECTION("missing list -> empty") {
         CHECK(parseRadioSongs(parse(R"({})"), "qq").empty());
+    }
+}
+
+TEST_CASE("resolveRadioPlatform picks first available radio-capable platform") {
+    PlatformInfo unsupported;
+    unsupported.id = "x";
+    unsupported.name = "X";
+    unsupported.status = 1;  // available but no radio bit
+    unsupported.featureSupportFlag = 0;
+
+    PlatformInfo unavailable;
+    unavailable.id = "y";
+    unavailable.name = "Y";
+    unavailable.status = 0;
+    unavailable.featureSupportFlag = kFeatureListRadios;
+
+    PlatformInfo good;
+    good.id = "z";
+    good.name = "Z";
+    good.status = 1;
+    good.featureSupportFlag = kFeatureListRadios;
+
+    SECTION("empty list -> nullopt") {
+        CHECK_FALSE(resolveRadioPlatform({}).has_value());
+    }
+    SECTION("no candidate has the radio bit -> nullopt") {
+        CHECK_FALSE(resolveRadioPlatform({unsupported}).has_value());
+    }
+    SECTION("candidate has the bit but is unavailable -> nullopt") {
+        CHECK_FALSE(resolveRadioPlatform({unavailable}).has_value());
+    }
+    SECTION("picks first qualifying entry, ignoring earlier disqualified") {
+        auto p = resolveRadioPlatform({unsupported, unavailable, good});
+        REQUIRE(p.has_value());
+        CHECK(p->id == "z");
     }
 }

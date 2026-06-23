@@ -27,7 +27,10 @@ enum class PageKind : std::uint8_t {
     AlbumDetail,
     ArtistDetail,
     Ranking,
+    RankingDetail,
     Radio,
+    RadioDetail,
+    PlaylistSquare,
     My,
 };
 
