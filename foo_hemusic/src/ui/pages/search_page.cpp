@@ -23,6 +23,7 @@
 #include "net/url_codec.h"
 #include "ui/cover_cache.h"
 #include "ui/image_cache.h"
+#include "ui/pages/discover_layout.h"
 #include "ui/pages/search_layout.h"
 #include "ui/pages/section_render.h"
 
@@ -263,6 +264,43 @@ bool SearchPage::onHostMessage(UINT msg, WPARAM /*wp*/, LPARAM /*lp*/) {
     return true;
 }
 
+bool SearchPage::onLeftDown(float xDip, float yDip) {
+    if (lastWidthDip_ <= 0.0F || !onArtistOpen_) {
+        return false;
+    }
+    const float yContent = yDip + scrollY_;
+    ArtistInfo target;
+    bool hit = false;
+    {
+        const std::lock_guard<std::mutex> lk(mu_);
+        if (status_ != Status::Loaded || artists_.empty()) {
+            return false;
+        }
+        const SearchLayout layout = computeSearchLayout(
+            bestMatch_.size(), songs_.size(), playlists_.size(), albums_.size(),
+            artists_.size(), videos_.size(), lastWidthDip_, lastMetrics_);
+        if (!layout.artist.present) {
+            return false;
+        }
+        const std::size_t n =
+            std::min(layout.artist.items.size(), artists_.size());
+        for (std::size_t i = 0; i < n; ++i) {
+            const LayoutRect& r = layout.artist.items.at(i);
+            if (xDip >= r.left && xDip < r.right && yContent >= r.top &&
+                yContent < r.bottom) {
+                target = artists_.at(i);
+                hit = true;
+                break;
+            }
+        }
+    }
+    if (hit) {
+        onArtistOpen_(target);
+        return true;
+    }
+    return false;
+}
+
 void SearchPage::onMouseWheel(int wheelDelta, float topInsetDip) {
     const float notches = static_cast<float>(wheelDelta) / WHEEL_DELTA;
     const float maxScroll =
@@ -307,6 +345,10 @@ void SearchPage::paint(ID2D1RenderTarget* rt, const Theme& theme,
     m.padding = theme.padding;
     m.rowHeight = theme.rowHeight;
     m.titleBand = theme.sectionTitleSize * kTitleBandFactor;
+    // Cache for hit-test so onLeftDown reuses the same width + metrics that
+    // produced the rects on screen.
+    lastWidthDip_ = size.width;
+    lastMetrics_ = m;
 
     const SearchLayout layout = computeSearchLayout(
         bestMatch_.size(), songs_.size(), playlists_.size(), albums_.size(),

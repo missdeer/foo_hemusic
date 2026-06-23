@@ -4,6 +4,9 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 using Catch::Matchers::WithinAbs;
+using hemusic::ui::ArtistDetailLayout;
+using hemusic::ui::ArtistTab;
+using hemusic::ui::computeArtistLayout;
 using hemusic::ui::computeDetailLayout;
 using hemusic::ui::DetailLayout;
 using hemusic::ui::LayoutMetrics;
@@ -93,6 +96,79 @@ TEST_CASE("enqueue button sits inside the banner info region, bottom-right") {
     // Pinned to the bottom-right corner of bannerInfo.
     CHECK_THAT(l.enqueueButton.right, WithinAbs(l.bannerInfo.right, kEps));
     CHECK_THAT(l.enqueueButton.bottom, WithinAbs(l.bannerInfo.bottom, kEps));
+}
+
+TEST_CASE("artist layout keeps banner + tab strip even with empty body") {
+    LayoutMetrics m;
+    auto l = computeArtistLayout(ArtistTab::Songs, 0, 600.0F, m);
+    CHECK(l.banner.right > l.banner.left);
+    CHECK(l.bannerCover.right > l.bannerCover.left);
+    CHECK(l.bannerInfo.right > l.bannerInfo.left);
+    CHECK(l.tabBar.band.right > l.tabBar.band.left);
+    for (const auto& t : l.tabBar.tabs) {
+        CHECK(t.right > t.left);
+        CHECK_THAT(t.top, WithinAbs(l.tabBar.band.top, kEps));
+        CHECK_THAT(t.bottom, WithinAbs(l.tabBar.band.bottom, kEps));
+    }
+    // Three tabs span the full band width without gaps.
+    CHECK_THAT(l.tabBar.tabs.front().left, WithinAbs(l.tabBar.band.left, kEps));
+    CHECK_THAT(l.tabBar.tabs.back().right,
+               WithinAbs(l.tabBar.band.right, kEps));
+    CHECK_FALSE(l.body.present);
+    CHECK(l.body.items.empty());
+}
+
+TEST_CASE("artist layout positions body below tab strip per active tab") {
+    LayoutMetrics m;
+    SECTION("songs tab places list rows stacked contiguously") {
+        auto l = computeArtistLayout(ArtistTab::Songs, 4, 600.0F, m);
+        REQUIRE(l.body.items.size() == 4);
+        const float expectedFirstTop = l.tabBar.band.bottom + m.sectionGap;
+        CHECK_THAT(l.body.items.front().top, WithinAbs(expectedFirstTop, kEps));
+        for (std::size_t i = 1; i < l.body.items.size(); ++i) {
+            CHECK_THAT(l.body.items.at(i).top,
+                       WithinAbs(l.body.items.at(i - 1).bottom, kEps));
+        }
+    }
+    SECTION("albums tab uses square card grid (cover height = card width)") {
+        auto l = computeArtistLayout(ArtistTab::Albums, 6, 800.0F, m);
+        REQUIRE(l.body.items.size() == 6);
+        // First card sits at tabBar.bottom + sectionGap (no implicit title).
+        const float expectedFirstTop = l.tabBar.band.bottom + m.sectionGap;
+        CHECK_THAT(l.body.items.front().top, WithinAbs(expectedFirstTop, kEps));
+    }
+    SECTION("mvs tab body first card sits below tab strip + gap") {
+        auto l = computeArtistLayout(ArtistTab::Mvs, 6, 800.0F, m);
+        REQUIRE_FALSE(l.body.items.empty());
+        const float expectedFirstTop = l.tabBar.band.bottom + m.sectionGap;
+        CHECK_THAT(l.body.items.front().top, WithinAbs(expectedFirstTop, kEps));
+    }
+}
+
+TEST_CASE("artist layout body contentHeight grows with item count") {
+    LayoutMetrics m;
+    const float h0 =
+        computeArtistLayout(ArtistTab::Songs, 0, 600.0F, m).contentHeight;
+    const float h5 =
+        computeArtistLayout(ArtistTab::Songs, 5, 600.0F, m).contentHeight;
+    CHECK(h5 > h0);
+    // Populated body adds a sectionGap before the rows (split from the empty
+    // tab-strip footer) plus N row heights.
+    CHECK_THAT(h5 - h0, WithinAbs(m.sectionGap + 5.0F * m.rowHeight, kEps));
+}
+
+TEST_CASE("artist tab switch preserves banner geometry") {
+    LayoutMetrics m;
+    // Hit-testing the banner / tab strip must stay invariant across active
+    // tabs so the user can switch without the cover / counts / tab rects
+    // moving on screen.
+    auto songs = computeArtistLayout(ArtistTab::Songs, 0, 700.0F, m);
+    auto albums = computeArtistLayout(ArtistTab::Albums, 0, 700.0F, m);
+    auto mvs = computeArtistLayout(ArtistTab::Mvs, 0, 700.0F, m);
+    CHECK_THAT(songs.banner.bottom, WithinAbs(albums.banner.bottom, kEps));
+    CHECK_THAT(songs.banner.bottom, WithinAbs(mvs.banner.bottom, kEps));
+    CHECK_THAT(songs.tabBar.band.top, WithinAbs(albums.tabBar.band.top, kEps));
+    CHECK_THAT(songs.tabBar.band.top, WithinAbs(mvs.tabBar.band.top, kEps));
 }
 
 TEST_CASE("banner always starts at top padding (hit-test coord invariant)") {

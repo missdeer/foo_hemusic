@@ -23,6 +23,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -34,6 +35,7 @@
 #include "api/playlist.h"
 #include "api/search.h"
 #include "api/song.h"
+#include "ui/pages/discover_layout.h"
 #include "ui/theme.h"
 
 namespace hemusic::ui {
@@ -81,6 +83,18 @@ class SearchPage {
     // content. UI thread only.
     void onMouseWheel(int wheelDelta, float topInsetDip);
 
+    // Wire-once: clicking an artist card in the artist section opens that
+    // artist's detail page. Other card sections (album/playlist/video) are
+    // wired in follow-up tickets.
+    void setOnArtistOpen(std::function<void(const ArtistInfo&)> cb) {
+        onArtistOpen_ = std::move(cb);
+    }
+
+    // Page-content DIP coordinates (MainPanel already subtracted the chrome).
+    // Returns true if a card was activated (suppresses other click handling).
+    // UI thread only.
+    bool onLeftDown(float xDip, float yDip);
+
    private:
     enum class Status : std::uint8_t {
         Idle,
@@ -111,6 +125,10 @@ class SearchPage {
 
     float scrollY_ = 0.0F;        // vertical scroll offset (UI thread)
     float contentHeight_ = 0.0F;  // last measured content height (UI thread)
+    float lastWidthDip_ = 0.0F;   // last paint() width, for hit-test
+    LayoutMetrics lastMetrics_;   // last paint() metrics, for hit-test
+
+    std::function<void(const ArtistInfo&)> onArtistOpen_;
 };
 
 }  // namespace hemusic::ui

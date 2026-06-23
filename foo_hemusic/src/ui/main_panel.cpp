@@ -34,6 +34,7 @@
 #include "ui/d2d.h"
 #include "ui/nav.h"
 #include "ui/pages/album_detail_page.h"
+#include "ui/pages/artist_detail_page.h"
 #include "ui/pages/discover_page.h"
 #include "ui/pages/playlist_detail_page.h"
 #include "ui/pages/search_page.h"
@@ -136,10 +137,15 @@ class MainPanel : public ui_element_instance {
         m_search.attach(m_hwnd);
         m_playlistDetail.attach(m_hwnd);
         m_albumDetail.attach(m_hwnd);
+        m_artistDetail.attach(m_hwnd);
         m_stack.replaceRoot({nav::PageKind::Discover, "发现", {}});
         m_discover.setOnPlaylistOpen(
             [this](const PlaylistInfo& p) { openPlaylistDetail(p); });
         m_discover.setOnAlbumOpen(
+            [this](const AlbumInfo& a) { openAlbumDetail(a); });
+        m_search.setOnArtistOpen(
+            [this](const ArtistInfo& a) { openArtistDetail(a); });
+        m_artistDetail.setOnAlbumOpen(
             [this](const AlbumInfo& a) { openAlbumDetail(a); });
         m_playlistDetail.setOnEnqueueAll([](const PlaylistInfo& p,
                                             const std::vector<SongInfo>& s) {
@@ -267,6 +273,10 @@ class MainPanel : public ui_element_instance {
                 case AlbumDetailPage::kCoverReadyMessage:
                     self->m_albumDetail.onHostMessage(msg, wp, lp);
                     return 0;
+                case ArtistDetailPage::kDoneMessage:
+                case ArtistDetailPage::kCoverReadyMessage:
+                    self->m_artistDetail.onHostMessage(msg, wp, lp);
+                    return 0;
                 case WM_HEMUSIC_AUTH_CHANGED:
                     // ★★ S7: discover/search workers may still in-flight after
                     // logout (known, not in HEMUSIC-15 scope); detail pages are
@@ -275,6 +285,7 @@ class MainPanel : public ui_element_instance {
                     self->m_search.reset();
                     self->m_playlistDetail.reset();
                     self->m_albumDetail.reset();
+                    self->m_artistDetail.reset();
                     self->m_stack.replaceRoot(
                         {tabToKind(self->m_tab), tabLabel(self->m_tab), {}});
                     self->updateSearchEditVisibility();
@@ -412,6 +423,7 @@ class MainPanel : public ui_element_instance {
         // its result instead of writing into stale state visible after the pop.
         m_playlistDetail.reset();
         m_albumDetail.reset();
+        m_artistDetail.reset();
         updateSearchEditVisibility();
         InvalidateRect(m_hwnd, nullptr, FALSE);
     }
@@ -453,15 +465,43 @@ class MainPanel : public ui_element_instance {
         InvalidateRect(m_hwnd, nullptr, FALSE);
     }
 
+    void openArtistDetail(const ArtistInfo& a) {
+        nav::PageEntry e;
+        e.kind = nav::PageKind::ArtistDetail;
+        e.title = a.name;
+        e.params["id"] = a.id;
+        e.params["platform"] = a.platform;
+        e.params["title"] = a.name;
+        m_stack.push(e);
+        m_artistDetail.enter(e);
+        updateSearchEditVisibility();
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+
     void popPage() {
         if (!m_stack.canGoBack()) {
             return;
         }
-        m_stack.pop();
-        // ★★ S7: stop the (now-orphaned) detail worker from clobbering the
-        // page state the user just navigated back to.
-        m_playlistDetail.reset();
-        m_albumDetail.reset();
+        // ★★ S7: stop the popped detail's in-flight worker from clobbering
+        // state that's no longer visible. Reset ONLY the popped page -- with
+        // HEMUSIC-17 (ArtistDetail -> AlbumDetail) the page being returned to
+        // can be another detail page, so a blanket reset would wipe it.
+        const auto popped = m_stack.pop();
+        if (popped) {
+            switch (popped->kind) {
+                case nav::PageKind::PlaylistDetail:
+                    m_playlistDetail.reset();
+                    break;
+                case nav::PageKind::AlbumDetail:
+                    m_albumDetail.reset();
+                    break;
+                case nav::PageKind::ArtistDetail:
+                    m_artistDetail.reset();
+                    break;
+                default:
+                    break;
+            }
+        }
         updateSearchEditVisibility();
         InvalidateRect(m_hwnd, nullptr, FALSE);
     }
@@ -515,6 +555,10 @@ class MainPanel : public ui_element_instance {
         // Forward to the current page in page-content DIP coordinates.
         if (currentKind() == nav::PageKind::Discover) {
             m_discover.onLeftDown(xDip, yDip - top);
+        } else if (currentKind() == nav::PageKind::Search) {
+            // Search artist cards push an artist-detail page; other clicks in
+            // the search EDIT band are handled by the Win32 EDIT subclass.
+            m_search.onLeftDown(xDip, yDip - top);
         } else if (currentKind() == nav::PageKind::PlaylistDetail) {
             if (m_playlistDetail.onLeftDown(xDip, yDip - top)) {
                 SetCapture(m_hwnd);
@@ -525,8 +569,11 @@ class MainPanel : public ui_element_instance {
                 SetCapture(m_hwnd);
                 m_capture = CaptureOwner::Page;
             }
+        } else if (currentKind() == nav::PageKind::ArtistDetail) {
+            // Artist detail handles tab switching + album-card clicks
+            // internally; it doesn't request capture (no draggable controls).
+            m_artistDetail.onLeftDown(xDip, yDip - top);
         }
-        // SearchPage clicks are handled by the EDIT subclass; nothing to do.
     }
 
     void onLeftUp(int xPx, int yPx) {
@@ -635,6 +682,9 @@ class MainPanel : public ui_element_instance {
                 break;
             case nav::PageKind::AlbumDetail:
                 m_albumDetail.onMouseWheel(delta, kTabBarH);
+                break;
+            case nav::PageKind::ArtistDetail:
+                m_artistDetail.onMouseWheel(delta, kTabBarH);
                 break;
             default:
                 break;
@@ -746,6 +796,9 @@ class MainPanel : public ui_element_instance {
                 case nav::PageKind::AlbumDetail:
                     m_albumDetail.paint(rt, theme, pageSize);
                     break;
+                case nav::PageKind::ArtistDetail:
+                    m_artistDetail.paint(rt, theme, pageSize);
+                    break;
                 default:
                     break;
             }
@@ -771,6 +824,7 @@ class MainPanel : public ui_element_instance {
     SearchPage m_search;
     PlaylistDetailPage m_playlistDetail;
     AlbumDetailPage m_albumDetail;
+    ArtistDetailPage m_artistDetail;
     nav::Stack m_stack;
     // Capture lifecycle (★ M5): MainPanel SetCapture's its own HWND when the
     // back button or current page reports a button-press, so subsequent
