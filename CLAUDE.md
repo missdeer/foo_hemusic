@@ -46,10 +46,6 @@ Define success criteria up front, then iterate until verified. Don't follow a fi
 | [`foobar2000-SDK-2025-03-07/`](./foobar2000-SDK-2025-03-07/) | 最新 foobar2000 SDK 源码 + 编译出的库二进制，只读参考 | ❌ 不修改 SDK 源码 |
 | [`wtl/`](./wtl/) | 微软 WTL 库：foobar2000 SDK 的依赖项，同时也用于 foo_hemusic 的 UI 构建 | ❌ 不修改 |
 
-# 项目状态
-
-**目前仅有 [`foo_hemusic/PLAN.md`](./foo_hemusic/PLAN.md)，没有任何源码、构建脚本或测试。** 任何代码改动都必须先确认 PLAN.md 是否已覆盖该决策；如未覆盖，先讨论再写代码。
-
 # 项目定位
 
 `foo_hemusic` 是为 **foobar2000 v2** 开发的组件（component / .fb2k-component DLL），把 HE-Music 后端作为音乐源接入 foobar2000：
@@ -83,26 +79,14 @@ Define success criteria up front, then iterate until verified. Don't follow a fi
 - 复用 Flutter 工程的设计时，照搬业务逻辑（API 调用顺序、状态机、字段兼容），**不要**照搬 Material 视觉风格（阴影、涟漪、强调色）
 - **UI 视觉分两层**（详见 [`foo_hemusic/PLAN.md`](./foo_hemusic/PLAN.md) §3.5）：**布局 / 元素 / 交互行为对齐官方网站 [`y.wjhe.top`](https://y.wjhe.top/)**（实现各页前用 **Chrome CDP** 连浏览器观察其 DOM 布局与运行时行为，第一版可略有偏差、非像素级；移动端 Flutter 布局仅作参考，UI 结构以官网为准）；**配色 / 字体跟随 foobar2000 主题**（随明暗换肤），不照搬官网或 Material 色板
 
-# 开工前的环境与验证步骤
-
-PLAN.md §8 列出按顺序的下一步。最关键的两点：
-
-1. **Phase 0 必须先编出 `foo_sample` 并加载到 foobar2000 验证工具链**。SDK 入口在 [`foobar2000-SDK-2025-03-07/foobar2000/foo_sample/foo_sample.sln`](./foobar2000-SDK-2025-03-07/foobar2000/foo_sample/foo_sample.sln)（VS2022 MSBuild 工程）。本项目自身用 **CMake** 构建；SDK 自带的 `.sln` 仅用来先验证工具链 / SDK 二进制能跑通，不作为 foo_hemusic 的构建系统。
-2. **抓包对照**：用真实账号在 Flutter app 跑一次完整登录 + 播放，记录 HTTP 流量做基线（特别是 `device_info` 字段实际格式、`User-Agent`、`/v1/song/url` 是否带 Referer 等隐式约束）。
-
 ## 第三方构建依赖：WTL
 
 foobar2000 SDK 依赖 **WTL (Windows Template Library)**，VS2022 不自带（VS 只带 ATL，没带 WTL），SDK 包里也没带。**未配置 WTL 直接编译 `foo_sample` 会报 `cannot open atlapp.h / atlctrls.h / atlcrack.h`**。
 
 本仓库的处理：
 
-- WTL 源码放在 [`wtl/`](./wtl/)（来自 https://github.com/Win32-WTL/WTL）
+- WTL 源码放在 [`wtl/`](./wtl/)（来自 https://sourceforge.net/projects/wtl/）
 - 根目录的 [`Directory.Build.targets`](./Directory.Build.targets) 自动把 `wtl/Include` 注入所有子 vcxproj 的 `AdditionalIncludeDirectories`——**不修改 SDK 任何文件**
-- 如果 WTL 装到别处，设环境变量 `WTLIncludeDir=D:\path\to\WTL\Include` 覆盖默认路径
-
-**不要**用以下方式配置（已被否决）：
-- ~~直接编辑 SDK 的 `.vcxproj`~~ ——污染上游，升级 SDK 时冲突
-- ~~改 `Microsoft.Cpp.x64.user.props`~~ ——污染机器全局 VS 配置
 
 ## pfc / libPPUI 必须用 FB2K 后缀配置
 
@@ -124,14 +108,14 @@ foobar2000 组件链接 `shared.dll`，而 `shared.dll` 已经导出了 `pfc::cr
 - Linux.do **只是 HE-Music 的一个 OAuth provider 名**，客户端不直接与 Linux.do 交互
 - Token 用 **DPAPI** 加密落地，不进明文 cfg；注意是 **双 token**（`access_token` + `refresh_token` + `expires_at` 都要存），401 时用 `refresh_token` 走 `POST /v1/auth/token/refresh` 续期后重放原请求
 - 所有带 token 的 HTTP 请求统一走 C++ 侧 WinHTTP，不引入第三方 HTTP 库
-- JSON 用 **Boost.JSON**（vcpkg `boost-json`），单元测试用 **Catch2**；依赖走 **vcpkg manifest**（`foo_hemusic/vcpkg.json`），CMake 接 `D:\vcpkg\scripts\buildsystems\vcpkg.cmake` toolchain。（原计划用 nlohmann/json，已于 2026-06-19 改为 Boost.JSON：分离编译、编译开销更小、`if_contains` 适配字段别名兼容）
+- JSON 用 **Boost.JSON**（vcpkg `boost-json`），单元测试用 **Catch2**；依赖走 **vcpkg manifest**（`foo_hemusic/vcpkg.json`），CMake 接 `D:\vcpkg\scripts\buildsystems\vcpkg.cmake` toolchain。
 - 默认只支持 foobar2000 **v2**，先发 x64
 
 # 编码约定（当代码开始存在后适用）
 
 - C++20，MSVC 2022，CMake 构建
 - 文件命名 `snake_case.{h,cpp}`，类名 `PascalCase`，函数 / 变量 `camelCase`
-- SDK 头文件已经全局污染了一堆宏（`pfc::string8` 等），业务代码用 SDK 类型时跟 SDK 风格，纯业务层（`api/`、`net/json_codec`）用 std + nlohmann
+- SDK 头文件已经全局污染了一堆宏（`pfc::string8` 等），业务代码用 SDK 类型时跟 SDK 风格，纯业务层（`api/`、`net/json_codec`）用 std + Boost.JSON
 - 不要把 token / 用户 token 写进日志（`console::print`）；日志走 `logging.h` 里的 redacted helper（待实现）
 
 # 常用命令
@@ -158,3 +142,7 @@ scripts\build.bat                # 构建 Release(组件 DLL + 测试);build.bat
 - `clang-tidy-postedit.sh` / `clang-tidy-stop.sh`:按 `.clang-tidy` 静态检查(经 `compile_commands.json`)。
 - 工具解析:优先 PATH,其次 `CLANG_TOOLS_DIR`(在 `settings.local.json` 设为本机 LLVM bin),找不到则静默跳过。
 - `.clang-format` 关 `SortIncludes`、`.clang-tidy` 关掉与 Win32 互操作冲突的检查(C 数组 / reinterpret_cast / include 排序)。
+
+# 非常重要！必须遵守！
+
+- 总是在项目根目录运行工具，调用工具前必须确认当前工作目录
