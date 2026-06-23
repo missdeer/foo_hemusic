@@ -132,9 +132,7 @@ class PlaylistDetailPage {
     Status status_ = Status::Idle;
     PlaylistInfo info_;
     std::vector<SongInfo> songs_;
-    std::string message_;   // error / status detail
-    std::string activeId_;  // current playlist id (UI title fallback)
-    std::string activePlatform_;
+    std::string message_;  // error / status detail
 
     // UI-thread only (no mu_ needed):
     float scrollY_ = 0.0F;

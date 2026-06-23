@@ -1,13 +1,13 @@
-#include "ui/pages/playlist_detail_layout.h"
+#include "ui/pages/detail_layout.h"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 using Catch::Matchers::WithinAbs;
 using hemusic::ui::computeDetailLayout;
+using hemusic::ui::DetailLayout;
 using hemusic::ui::LayoutMetrics;
 using hemusic::ui::LayoutRect;
-using hemusic::ui::PlaylistDetailLayout;
 
 namespace {
 

@@ -33,6 +33,7 @@
 #include "core/session.h"
 #include "ui/d2d.h"
 #include "ui/nav.h"
+#include "ui/pages/album_detail_page.h"
 #include "ui/pages/discover_page.h"
 #include "ui/pages/playlist_detail_page.h"
 #include "ui/pages/search_page.h"
@@ -134,9 +135,12 @@ class MainPanel : public ui_element_instance {
         m_discover.attach(m_hwnd);
         m_search.attach(m_hwnd);
         m_playlistDetail.attach(m_hwnd);
+        m_albumDetail.attach(m_hwnd);
         m_stack.replaceRoot({nav::PageKind::Discover, "发现", {}});
         m_discover.setOnPlaylistOpen(
             [this](const PlaylistInfo& p) { openPlaylistDetail(p); });
+        m_discover.setOnAlbumOpen(
+            [this](const AlbumInfo& a) { openAlbumDetail(a); });
         m_playlistDetail.setOnEnqueueAll([](const PlaylistInfo& p,
                                             const std::vector<SongInfo>& s) {
             // ★ M1: SDK helper -- popup_message::g_show, NOT
@@ -149,6 +153,16 @@ class MainPanel : public ui_element_instance {
             msg += p.name.c_str();
             msg += " (";
             msg += pfc::format_int(static_cast<int64_t>(s.size()));
+            msg += " 首)";
+            popup_message::g_show(msg, "HE-Music");
+        });
+        m_albumDetail.setOnEnqueueAll([](const AlbumInfo& a) {
+            pfc::string8 msg;
+            msg =
+                "全部入列功能尚未实装(HEMUSIC-5: playlist_writer)\n当前专辑：";
+            msg += a.name.c_str();
+            msg += " (";
+            msg += pfc::format_int(static_cast<int64_t>(a.songs.size()));
             msg += " 首)";
             popup_message::g_show(msg, "HE-Music");
         });
@@ -249,13 +263,18 @@ class MainPanel : public ui_element_instance {
                 case PlaylistDetailPage::kCoverReadyMessage:
                     self->m_playlistDetail.onHostMessage(msg, wp, lp);
                     return 0;
+                case AlbumDetailPage::kDoneMessage:
+                case AlbumDetailPage::kCoverReadyMessage:
+                    self->m_albumDetail.onHostMessage(msg, wp, lp);
+                    return 0;
                 case WM_HEMUSIC_AUTH_CHANGED:
                     // ★★ S7: discover/search workers may still in-flight after
-                    // logout (known, not in HEMUSIC-15 scope); detail page is
-                    // bumped via reset() to drop its workers' writes.
+                    // logout (known, not in HEMUSIC-15 scope); detail pages are
+                    // bumped via reset() to drop their workers' writes.
                     self->m_discover.load();
                     self->m_search.reset();
                     self->m_playlistDetail.reset();
+                    self->m_albumDetail.reset();
                     self->m_stack.replaceRoot(
                         {tabToKind(self->m_tab), tabLabel(self->m_tab), {}});
                     self->updateSearchEditVisibility();
@@ -389,9 +408,10 @@ class MainPanel : public ui_element_instance {
         }
         m_tab = tab;
         m_stack.replaceRoot({tabToKind(tab), tabLabel(tab), {}});
-        // ★★ S7: bump detail page's generation so any in-flight worker drops
+        // ★★ S7: bump detail pages' generation so any in-flight worker drops
         // its result instead of writing into stale state visible after the pop.
         m_playlistDetail.reset();
+        m_albumDetail.reset();
         updateSearchEditVisibility();
         InvalidateRect(m_hwnd, nullptr, FALSE);
     }
@@ -420,6 +440,19 @@ class MainPanel : public ui_element_instance {
         InvalidateRect(m_hwnd, nullptr, FALSE);
     }
 
+    void openAlbumDetail(const AlbumInfo& a) {
+        nav::PageEntry e;
+        e.kind = nav::PageKind::AlbumDetail;
+        e.title = a.name;
+        e.params["id"] = a.id;
+        e.params["platform"] = a.platform;
+        e.params["title"] = a.name;
+        m_stack.push(e);
+        m_albumDetail.enter(e);
+        updateSearchEditVisibility();
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+
     void popPage() {
         if (!m_stack.canGoBack()) {
             return;
@@ -428,6 +461,7 @@ class MainPanel : public ui_element_instance {
         // ★★ S7: stop the (now-orphaned) detail worker from clobbering the
         // page state the user just navigated back to.
         m_playlistDetail.reset();
+        m_albumDetail.reset();
         updateSearchEditVisibility();
         InvalidateRect(m_hwnd, nullptr, FALSE);
     }
@@ -486,6 +520,11 @@ class MainPanel : public ui_element_instance {
                 SetCapture(m_hwnd);
                 m_capture = CaptureOwner::Page;
             }
+        } else if (currentKind() == nav::PageKind::AlbumDetail) {
+            if (m_albumDetail.onLeftDown(xDip, yDip - top)) {
+                SetCapture(m_hwnd);
+                m_capture = CaptureOwner::Page;
+            }
         }
         // SearchPage clicks are handled by the EDIT subclass; nothing to do.
     }
@@ -515,7 +554,11 @@ class MainPanel : public ui_element_instance {
         }
         if (owner == CaptureOwner::Page) {
             const float top = contentTopDip();
-            m_playlistDetail.onLeftUp(xDip, yDip - top);
+            if (currentKind() == nav::PageKind::AlbumDetail) {
+                m_albumDetail.onLeftUp(xDip, yDip - top);
+            } else {
+                m_playlistDetail.onLeftUp(xDip, yDip - top);
+            }
             ReleaseCapture();  // page already consumed its pressing flag
         }
     }
@@ -534,12 +577,17 @@ class MainPanel : public ui_element_instance {
         }
         if (m_capture == CaptureOwner::Page ||
             (m_capture == CaptureOwner::None &&
-             currentKind() == nav::PageKind::PlaylistDetail)) {
+             (currentKind() == nav::PageKind::PlaylistDetail ||
+              currentKind() == nav::PageKind::AlbumDetail))) {
             const float top = contentTopDip();
             const float pageY = yDip - top;
             // Negative pageY (in chrome) still gets forwarded so the page can
             // clear its own hover state when the cursor drifts up.
-            m_playlistDetail.onMouseMove(xDip, pageY);
+            if (currentKind() == nav::PageKind::AlbumDetail) {
+                m_albumDetail.onMouseMove(xDip, pageY);
+            } else {
+                m_playlistDetail.onMouseMove(xDip, pageY);
+            }
         }
     }
 
@@ -551,6 +599,8 @@ class MainPanel : public ui_element_instance {
         }
         if (currentKind() == nav::PageKind::PlaylistDetail) {
             m_playlistDetail.onMouseLeave();
+        } else if (currentKind() == nav::PageKind::AlbumDetail) {
+            m_albumDetail.onMouseLeave();
         }
     }
 
@@ -564,7 +614,11 @@ class MainPanel : public ui_element_instance {
             m_backBtnPressing = false;
             InvalidateRect(m_hwnd, nullptr, FALSE);
         } else if (owner == CaptureOwner::Page) {
-            m_playlistDetail.onCaptureLost();
+            if (currentKind() == nav::PageKind::AlbumDetail) {
+                m_albumDetail.onCaptureLost();
+            } else {
+                m_playlistDetail.onCaptureLost();
+            }
         }
     }
 
@@ -578,6 +632,9 @@ class MainPanel : public ui_element_instance {
                 break;
             case nav::PageKind::PlaylistDetail:
                 m_playlistDetail.onMouseWheel(delta, kTabBarH);
+                break;
+            case nav::PageKind::AlbumDetail:
+                m_albumDetail.onMouseWheel(delta, kTabBarH);
                 break;
             default:
                 break;
@@ -686,6 +743,9 @@ class MainPanel : public ui_element_instance {
                 case nav::PageKind::PlaylistDetail:
                     m_playlistDetail.paint(rt, theme, pageSize);
                     break;
+                case nav::PageKind::AlbumDetail:
+                    m_albumDetail.paint(rt, theme, pageSize);
+                    break;
                 default:
                     break;
             }
@@ -710,6 +770,7 @@ class MainPanel : public ui_element_instance {
     DiscoverPage m_discover;
     SearchPage m_search;
     PlaylistDetailPage m_playlistDetail;
+    AlbumDetailPage m_albumDetail;
     nav::Stack m_stack;
     // Capture lifecycle (★ M5): MainPanel SetCapture's its own HWND when the
     // back button or current page reports a button-press, so subsequent

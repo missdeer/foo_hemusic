@@ -5,19 +5,26 @@
 
 #include "ui/pages/discover_layout.h"
 
-// Pure layout math for the playlist detail page (HEMUSIC-15). Mirrors
-// discover_layout.h's split: this header positions the banner + song rows in
-// *content coordinates* (pre-scroll); the page translates by -scrollY when
-// painting and adds +scrollY when hit-testing. No Win32/D2D deps -> testable.
+// Pure layout math for the playlist detail page (HEMUSIC-15) and the album
+// detail page (HEMUSIC-16). Mirrors discover_layout.h's split: this header
+// positions the banner + song rows in *content coordinates* (pre-scroll); the
+// page translates by -scrollY when painting and adds +scrollY when hit-testing.
+// No Win32/D2D deps -> testable.
 //
 // Reuses LayoutRect / SectionLayout / LayoutMetrics from discover_layout.h
 // (LayoutMetrics gained detailBannerHeight / detailBannerCoverSide /
 // detailBannerGap / detailEnqueueBtnW / detailEnqueueBtnH, all `detail`
 // prefixed so the discover/search layouts that ignore them stay readable).
+//
+// DetailLayout is generic: the album page binds it identically -- both pages
+// show a cover-left / info-right banner with an enqueue button pinned to the
+// bottom-right plus a song list. Only the banner text content differs (album
+// shows artists + publish_time vs playlist's creator), and that's rendered
+// outside this layout module.
 
 namespace hemusic::ui {
 
-struct PlaylistDetailLayout {
+struct DetailLayout {
     float contentHeight = 0;
     LayoutRect banner;       // full banner band (padding + height)
     LayoutRect bannerCover;  // square cover on the left
@@ -29,15 +36,14 @@ struct PlaylistDetailLayout {
 // Lays out: top padding -> banner (cover left / info right / enqueue button
 // pinned bottom-right of info) -> sectionGap -> song list -> bottom padding.
 // Empty song list collapses the section (no title band, no rows). Banner is
-// always present (it carries the playlist meta even when songs aren't loaded
-// yet), so contentHeight >= banner area + 2*padding.
-inline PlaylistDetailLayout computeDetailLayout(std::size_t songCount,
-                                                float width,
-                                                const LayoutMetrics& m) {
+// always present (it carries the playlist/album meta even when songs aren't
+// loaded yet), so contentHeight >= banner area + 2*padding.
+inline DetailLayout computeDetailLayout(std::size_t songCount, float width,
+                                        const LayoutMetrics& m) {
     const float avail = std::max(0.0F, width - 2.0F * m.padding);
     const float left = m.padding;
 
-    PlaylistDetailLayout out;
+    DetailLayout out;
 
     // --- Banner ---
     const float bannerTop = m.padding;

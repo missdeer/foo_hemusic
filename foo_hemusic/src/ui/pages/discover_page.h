@@ -89,9 +89,16 @@ class DiscoverPage {
         onPlaylistOpen_ = std::move(cb);
     }
 
+    // Wire-once callback fired when the user clicks one of the new-album
+    // cards. MainPanel pushes an AlbumDetail PageEntry from this.
+    void setOnAlbumOpen(std::function<void(const AlbumInfo&)> cb) {
+        onAlbumOpen_ = std::move(cb);
+    }
+
     // Page-content DIP coordinates (MainPanel already subtracted
-    // contentTopDip()). Hits the featured-playlist grid; misses are silent.
-    // Returns true if a card was activated. UI thread only.
+    // contentTopDip()). Hits the new-album grid first, then the
+    // featured-playlist grid; misses are silent. Returns true if a card was
+    // activated. UI thread only.
     bool onLeftDown(float xDip, float yDip);
 
    private:
@@ -125,6 +132,7 @@ class DiscoverPage {
     float lastWidthDip_ = 0.0F;   // last paint() width, used by hit-test
     LayoutMetrics lastMetrics_;   // last paint() metrics; hit-test must reuse
     std::function<void(const PlaylistInfo&)> onPlaylistOpen_;
+    std::function<void(const AlbumInfo&)> onAlbumOpen_;
 };
 
 }  // namespace hemusic::ui

@@ -1,4 +1,4 @@
-#include "ui/pages/playlist_detail_page.h"
+#include "ui/pages/album_detail_page.h"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -12,10 +12,9 @@
 #include <mutex>
 #include <string>
 #include <utility>
-#include <vector>
 
-#include "api/playlist.h"
-#include "api/playlist_detail.h"
+#include "api/album.h"
+#include "api/album_detail.h"
 #include "api/song.h"
 #include "core/session.h"
 #include "net/api_client.h"
@@ -25,9 +24,6 @@
 #include "ui/image_cache.h"
 #include "ui/pages/detail_layout.h"
 #include "ui/pages/section_render.h"
-
-// No SDK headers: Session / ApiClient / HttpClient are SDK-free; drawing is
-// plain Win32 + Direct2D shared via section_render.h.
 
 namespace hemusic::ui {
 
@@ -41,20 +37,12 @@ using render_detail::parseJson;
 
 constexpr float kScrollStepPx = 120.0F;
 constexpr float kTitleBandFactor = 1.6F;
-// Banner title font multiplier (NIT N3) -- larger than section titles so the
-// playlist name dominates the banner.
 constexpr float kBannerTitleScale = 1.25F;
-constexpr float kBannerSubGap = 4.0F;  // gap between banner text lines
-constexpr float kButtonRadius = 4.0F;  // enqueue button rounded corner
-// Press tint: blend the button background `kPressBlend` of the way toward text.
+constexpr float kBannerSubGap = 4.0F;
+constexpr float kButtonRadius = 4.0F;
 constexpr float kPressBlend = 0.20F;
-// Hover tint: solid fill at `kHoverAlpha` of the selection color.
 constexpr float kHoverAlpha = 0.85F;
 
-// Page-local layout metrics. The shared LayoutMetrics defaults carry both the
-// list/grid constants and our `detail*` banner sizes; we only override what the
-// theme dictates (padding / rowHeight / titleBand follow whatever the theme
-// sets so paint + hit-test stay aligned -- see currentMetrics()).
 LayoutMetrics currentMetrics(const Theme& theme) {
     LayoutMetrics m;
     m.padding = theme.padding;
@@ -63,7 +51,6 @@ LayoutMetrics currentMetrics(const Theme& theme) {
     return m;
 }
 
-// COLORREF-free linear blend between two D2D colors.
 D2D1_COLOR_F lerp(const D2D1_COLOR_F& a, const D2D1_COLOR_F& b, float t) {
     return D2D1::ColorF(a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t,
                         a.b + (b.b - a.b) * t, a.a + (b.a - a.a) * t);
@@ -73,47 +60,60 @@ bool rectContains(const LayoutRect& r, float x, float y) {
     return x >= r.left && x < r.right && y >= r.top && y < r.bottom;
 }
 
-D2D1_RECT_F toD2D(const LayoutRect& r) {
-    return D2D1::RectF(r.left, r.top, r.right, r.bottom);
-}
-
-// Concatenates "<song_count> 首 · 播放 <play_count>" from whichever fields the
-// payload carries; empty when both are absent.
-std::string formatCounts(const PlaylistInfo& info) {
-    std::string out;
-    if (!info.songCount.empty()) {
-        out = info.songCount + " 首";
+// "<artists> · <publish_time>" — drops either side when absent. Used as the
+// banner subtitle line, mirroring the y.wjhe.top album page hierarchy where
+// the artist name + release year sit immediately under the album title.
+std::string formatArtistsAndYear(const AlbumInfo& a) {
+    std::string out = artistNamesText(a.artists);  // "-" when no artists
+    if (out == "-") {
+        out.clear();
     }
-    if (!info.playCount.empty()) {
+    if (!a.publishTime.empty()) {
         if (!out.empty()) {
             out += " · ";
         }
-        out += "播放 " + info.playCount;
+        out += a.publishTime;
     }
     return out;
 }
 
-// Paints the banner info column: title (big), creator, counts. Caller must
-// hold PlaylistDetailPage::mu_.
+// "<song_count> 首 · 播放 <play_count>" — matches PlaylistDetail's third line.
+// Empty when both counts are absent.
+std::string formatCounts(const AlbumInfo& a) {
+    std::string out;
+    if (!a.songCount.empty()) {
+        out = a.songCount + " 首";
+    }
+    if (!a.playCount.empty()) {
+        if (!out.empty()) {
+            out += " · ";
+        }
+        out += "播放 " + a.playCount;
+    }
+    return out;
+}
+
 void paintBannerInfo(ID2D1RenderTarget* rt, const Theme& theme,
                      const Renderer& rn, IDWriteTextFormat* bannerTitleFmt,
                      const D2D1_RECT_F& infoS, float btnBandH,
-                     const PlaylistInfo& info) {
+                     const AlbumInfo& a) {
     const float titleH =
         theme.sectionTitleSize * kBannerTitleScale + kBannerSubGap;
     const float subLineH = theme.rowSubSize + kBannerSubGap;
     float y = infoS.top + kBannerSubGap;
 
-    drawText(rt, bannerTitleFmt, utf8ToWide(info.name), rn.textBrush.Get(),
+    drawText(rt, bannerTitleFmt, utf8ToWide(a.name), rn.textBrush.Get(),
              D2D1::RectF(infoS.left, y, infoS.right, y + titleH));
     y += titleH;
 
-    const std::string creator = "创建者：" + info.creator;
-    drawText(rt, rn.subFmt.Get(), utf8ToWide(creator), rn.subBrush.Get(),
-             D2D1::RectF(infoS.left, y, infoS.right, y + subLineH));
-    y += subLineH;
+    const std::string artistLine = formatArtistsAndYear(a);
+    if (!artistLine.empty()) {
+        drawText(rt, rn.subFmt.Get(), utf8ToWide(artistLine), rn.subBrush.Get(),
+                 D2D1::RectF(infoS.left, y, infoS.right, y + subLineH));
+        y += subLineH;
+    }
 
-    const std::string counts = formatCounts(info);
+    const std::string counts = formatCounts(a);
     if (counts.empty()) {
         return;
     }
@@ -122,11 +122,10 @@ void paintBannerInfo(ID2D1RenderTarget* rt, const Theme& theme,
              D2D1::RectF(infoS.left, y, infoS.right, bottom));
 }
 
-// Picks the button background brush per (hover, pressing) state. Returns null
-// for the idle / outline-only case (no fill).
-Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> makeButtonFill(
-    ID2D1RenderTarget* rt, const Theme& theme, bool hover, bool pressing) {
-    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
+ComPtr<ID2D1SolidColorBrush> makeButtonFill(ID2D1RenderTarget* rt,
+                                            const Theme& theme, bool hover,
+                                            bool pressing) {
+    ComPtr<ID2D1SolidColorBrush> b;
     if (pressing && hover) {
         rt->CreateSolidColorBrush(
             lerp(theme.selection, theme.text, kPressBlend), b.GetAddressOf());
@@ -138,8 +137,6 @@ Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> makeButtonFill(
     return b;
 }
 
-// Self-drawn enqueue stub: fill (hover/press) + outline + label. selBrush must
-// be non-null; visibility check + ★★ S5 stub semantics handled by caller.
 void paintEnqueueButton(ID2D1RenderTarget* rt, const Theme& theme,
                         IDWriteTextFormat* btnFmt, const D2D1_RECT_F& btnS,
                         ID2D1SolidColorBrush* selBrush, bool hover,
@@ -151,7 +148,7 @@ void paintEnqueueButton(ID2D1RenderTarget* rt, const Theme& theme,
     }
     rt->DrawRoundedRectangle(rr, selBrush, render_detail::kStrokeWidth);
 
-    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> labelBrush;
+    ComPtr<ID2D1SolidColorBrush> labelBrush;
     const D2D1_COLOR_F labelColor = hover ? theme.background : theme.selection;
     rt->CreateSolidColorBrush(labelColor, labelBrush.GetAddressOf());
     if (labelBrush) {
@@ -161,11 +158,7 @@ void paintEnqueueButton(ID2D1RenderTarget* rt, const Theme& theme,
 
 }  // namespace
 
-PlaylistDetailPage::~PlaylistDetailPage() {
-    // Bump gen so any worker that wakes up after we start tearing down will
-    // discard its result; then join every worker still on file. Each worker is
-    // bounded by (connect 8s + read 15s) * 2 ≈ 46s worst case (network dead)
-    // but completes far faster in practice.
+AlbumDetailPage::~AlbumDetailPage() {
     gen_.fetch_add(1);
     for (auto& t : workers_) {
         if (t.joinable()) {
@@ -177,17 +170,7 @@ PlaylistDetailPage::~PlaylistDetailPage() {
     }
 }
 
-void PlaylistDetailPage::joinFinishedWorkers() {
-    // ★ R1-M2: must NOT block the UI thread on still-running workers. There's
-    // no portable lock-free "thread done?" probe, so we just leave joinable
-    // threads in place; they accumulate for the life of the page (one entry
-    // per playlist opened) but each holds only a small thread handle and is
-    // joined in the destructor once it has run to completion (gen check inside
-    // mu_ guarantees its writes are discarded). Net cost: a few dozen bytes
-    // per opened playlist for one panel lifetime -- negligible vs the freeze.
-}
-
-void PlaylistDetailPage::enter(const nav::PageEntry& entry) {
+void AlbumDetailPage::enter(const nav::PageEntry& entry) {
     const auto pickParam = [&](const char* key) -> std::string {
         auto it = entry.params.find(key);
         return it == entry.params.end() ? std::string{} : it->second;
@@ -197,25 +180,19 @@ void PlaylistDetailPage::enter(const nav::PageEntry& entry) {
         args.title = entry.title;
     }
 
-    // UI-thread: reset scroll + button state for the new page.
     scrollY_ = 0.0F;
     contentHeight_ = 0.0F;
     btnHover_ = false;
     btnPressing_ = false;
-
-    // Sweep finished workers (best-effort; superseded ones will drop their
-    // results without writing).
-    joinFinishedWorkers();
 
     const std::uint64_t myGen = gen_.fetch_add(1) + 1;
 
     if (args.id.empty() || args.platform.empty()) {
         const std::lock_guard<std::mutex> lk(mu_);
         status_ = Status::Error;
-        message_ = "歌单参数缺失";
-        info_ = PlaylistInfo{};
+        message_ = "专辑参数缺失";
+        info_ = AlbumInfo{};
         info_.name = args.title;
-        songs_.clear();
         if (host_ != nullptr) {
             InvalidateRect(host_, nullptr, FALSE);
         }
@@ -225,11 +202,10 @@ void PlaylistDetailPage::enter(const nav::PageEntry& entry) {
     if (!Session::instance().isAuthenticated()) {
         const std::lock_guard<std::mutex> lk(mu_);
         status_ = Status::NotLoggedIn;
-        info_ = PlaylistInfo{};
+        info_ = AlbumInfo{};
         info_.name = args.title;
         info_.id = args.id;
         info_.platform = args.platform;
-        songs_.clear();
         message_.clear();
         if (host_ != nullptr) {
             InvalidateRect(host_, nullptr, FALSE);
@@ -240,11 +216,10 @@ void PlaylistDetailPage::enter(const nav::PageEntry& entry) {
     {
         const std::lock_guard<std::mutex> lk(mu_);
         status_ = Status::Loading;
-        info_ = PlaylistInfo{};
+        info_ = AlbumInfo{};
         info_.name = args.title;
         info_.id = args.id;
         info_.platform = args.platform;
-        songs_.clear();
         message_.clear();
     }
     if (host_ != nullptr) {
@@ -253,14 +228,12 @@ void PlaylistDetailPage::enter(const nav::PageEntry& entry) {
     workers_.emplace_back([this, args, myGen] { worker(args, myGen); });
 }
 
-void PlaylistDetailPage::reset() {
-    // Bump gen so all in-flight workers drop their results.
+void AlbumDetailPage::reset() {
     gen_.fetch_add(1);
     {
         const std::lock_guard<std::mutex> lk(mu_);
         status_ = Status::Idle;
-        info_ = PlaylistInfo{};
-        songs_.clear();
+        info_ = AlbumInfo{};
         message_.clear();
     }
     scrollY_ = 0.0F;
@@ -272,7 +245,7 @@ void PlaylistDetailPage::reset() {
     }
 }
 
-void PlaylistDetailPage::worker(WorkerArgs args, std::uint64_t myGen) {
+void AlbumDetailPage::worker(WorkerArgs args, std::uint64_t myGen) {
     HttpClient http;
     ApiClient::Transport transport = [&http](const HttpRequest& r) {
         return http.send(r);
@@ -280,11 +253,10 @@ void PlaylistDetailPage::worker(WorkerArgs args, std::uint64_t myGen) {
 
     Status st = Status::Error;
     std::string msg;
-    PlaylistInfo info;
+    AlbumInfo info;
     info.id = args.id;
     info.platform = args.platform;
     info.name = args.title;
-    std::vector<SongInfo> songs;
 
     Session& session = Session::instance();
     auto clientOpt = session.buildClient(transport);
@@ -294,55 +266,36 @@ void PlaylistDetailPage::worker(WorkerArgs args, std::uint64_t myGen) {
         ApiClient client = std::move(*clientOpt);
         const std::string base = session.baseUrl();
 
-        HttpRequest detailReq;
-        detailReq.url =
-            url::buildUrl(base, "/v1/playlist",
-                          {{"id", args.id}, {"platform", args.platform}});
-        detailReq.connectTimeoutMs = kFetchConnectMs;
-        detailReq.readTimeoutMs = kFetchReadMs;
-        const HttpResponse detailResp = client.send(detailReq);
-        if (!isHttpOk(detailResp)) {
-            msg = "无法获取歌单信息";
+        HttpRequest req;
+        req.url = url::buildUrl(base, "/v1/album",
+                                {{"id", args.id}, {"platform", args.platform}});
+        req.connectTimeoutMs = kFetchConnectMs;
+        req.readTimeoutMs = kFetchReadMs;
+        const HttpResponse resp = client.send(req);
+        if (!isHttpOk(resp)) {
+            msg = "无法获取专辑详情";
         } else {
-            info = parsePlaylistDetailInfo(parseJson(detailResp.body), args.id,
-                                           args.platform, args.title);
-            HttpRequest songsReq;
-            songsReq.url = url::buildUrl(base, "/v1/playlist/songs",
-                                         {{"id", args.id},
-                                          {"platform", args.platform},
-                                          {"page_index", "1"},
-                                          {"page_size", "1000"}});
-            songsReq.connectTimeoutMs = kFetchConnectMs;
-            songsReq.readTimeoutMs = kFetchReadMs;
-            const HttpResponse songsResp = client.send(songsReq);
-            if (!isHttpOk(songsResp)) {
-                msg = "无法获取歌曲列表";
-            } else {
-                songs = parsePlaylistSongs(parseJson(songsResp.body),
-                                           args.platform);
-                st = Status::Loaded;
-            }
+            info = parseAlbumDetailInfo(parseJson(resp.body), args.id,
+                                        args.platform, args.title);
+            st = Status::Loaded;
         }
     }
 
-    // ★★ M6 TOCTOU: gen check is INSIDE the lock so we can't be preempted
-    // between read-gen and write-state by a newer worker.
     {
         const std::lock_guard<std::mutex> lk(mu_);
         if (myGen != gen_.load()) {
-            return;  // superseded -- drop the result silently
+            return;
         }
         status_ = st;
         message_ = std::move(msg);
         info_ = std::move(info);
-        songs_ = std::move(songs);
     }
     PostMessageW(host_, kDoneMessage, 0, 0);
 }
 
-bool PlaylistDetailPage::onHostMessage(UINT msg, WPARAM /*wp*/, LPARAM /*lp*/) {
+bool AlbumDetailPage::onHostMessage(UINT msg, WPARAM /*wp*/, LPARAM /*lp*/) {
     if (msg == kDoneMessage) {
-        scrollY_ = 0.0F;  // fresh data -> back to top
+        scrollY_ = 0.0F;
     } else if (msg != kCoverReadyMessage) {
         return false;
     }
@@ -352,7 +305,7 @@ bool PlaylistDetailPage::onHostMessage(UINT msg, WPARAM /*wp*/, LPARAM /*lp*/) {
     return true;
 }
 
-void PlaylistDetailPage::onMouseWheel(int wheelDelta, float topInsetDip) {
+void AlbumDetailPage::onMouseWheel(int wheelDelta, float topInsetDip) {
     const float notches = static_cast<float>(wheelDelta) / WHEEL_DELTA;
     const float maxScroll =
         std::max(0.0F, contentHeight_ - viewportHeightDip(host_, topInsetDip));
@@ -362,32 +315,22 @@ void PlaylistDetailPage::onMouseWheel(int wheelDelta, float topInsetDip) {
     }
 }
 
-bool PlaylistDetailPage::hitEnqueueButton(float xDip, float yDipContent) const {
-    // Need both: the latest paint width (for layout) and Loaded status (only
-    // then is the button meaningful). Caller has already converted yDip ->
-    // content coords (yDip + scrollY_).
+bool AlbumDetailPage::hitEnqueueButton(float xDip, float yDipContent) const {
     if (lastWidthDip_ <= 0.0F) {
         return false;
     }
-    LayoutMetrics m;
     {
-        // We don't actually need mu_ for status_ here since the read is
-        // best-effort and a stale value just causes one extra repaint, but
-        // staying consistent with M7 keeps the rule simple.
         const std::lock_guard<std::mutex> lk(mu_);
         if (status_ != Status::Loaded) {
             return false;
         }
     }
-    // ★ M4: hit-test must use the same metrics paint cached, not the defaults
-    // (theme.padding could differ in theory; keep paint/hit-test fused via
-    // lastMetrics_).
     const DetailLayout layout =
         computeDetailLayout(0, lastWidthDip_, lastMetrics_);
     return rectContains(layout.enqueueButton, xDip, yDipContent);
 }
 
-bool PlaylistDetailPage::onLeftDown(float xDip, float yDip) {
+bool AlbumDetailPage::onLeftDown(float xDip, float yDip) {
     const float yContent = yDip + scrollY_;
     if (hitEnqueueButton(xDip, yContent)) {
         btnPressing_ = true;
@@ -395,12 +338,12 @@ bool PlaylistDetailPage::onLeftDown(float xDip, float yDip) {
         if (host_ != nullptr) {
             InvalidateRect(host_, nullptr, FALSE);
         }
-        return true;  // request SetCapture from host
+        return true;
     }
     return false;
 }
 
-bool PlaylistDetailPage::onMouseMove(float xDip, float yDip) {
+bool AlbumDetailPage::onMouseMove(float xDip, float yDip) {
     const float yContent = yDip + scrollY_;
     const bool over = hitEnqueueButton(xDip, yContent);
     if (over != btnHover_) {
@@ -412,7 +355,7 @@ bool PlaylistDetailPage::onMouseMove(float xDip, float yDip) {
     return btnPressing_;
 }
 
-bool PlaylistDetailPage::onLeftUp(float xDip, float yDip) {
+bool AlbumDetailPage::onLeftUp(float xDip, float yDip) {
     const bool wasPressing = btnPressing_;
     btnPressing_ = false;
     const float yContent = yDip + scrollY_;
@@ -422,21 +365,17 @@ bool PlaylistDetailPage::onLeftUp(float xDip, float yDip) {
         InvalidateRect(host_, nullptr, FALSE);
     }
     if (wasPressing && over && onEnqueueAll_) {
-        // ★★ M7: copy out under mu_, then invoke callback unlocked so the
-        // callback can't deadlock (or starve worker writes) by re-entering.
-        PlaylistInfo infoCopy;
-        std::vector<SongInfo> songsCopy;
+        AlbumInfo infoCopy;
         {
             const std::lock_guard<std::mutex> lk(mu_);
             infoCopy = info_;
-            songsCopy = songs_;
         }
-        onEnqueueAll_(infoCopy, songsCopy);
+        onEnqueueAll_(infoCopy);
     }
     return wasPressing;
 }
 
-void PlaylistDetailPage::onMouseLeave() {
+void AlbumDetailPage::onMouseLeave() {
     if (btnHover_) {
         btnHover_ = false;
         if (host_ != nullptr) {
@@ -445,7 +384,7 @@ void PlaylistDetailPage::onMouseLeave() {
     }
 }
 
-void PlaylistDetailPage::onCaptureLost() {
+void AlbumDetailPage::onCaptureLost() {
     if (btnPressing_) {
         btnPressing_ = false;
         if (host_ != nullptr) {
@@ -454,11 +393,8 @@ void PlaylistDetailPage::onCaptureLost() {
     }
 }
 
-void PlaylistDetailPage::paint(ID2D1RenderTarget* rt, const Theme& theme,
-                               D2D1_SIZE_F size) {
-    // ★★ M7: every UI-thread read of info_ / songs_ / status_ / message_
-    // happens under mu_. We hold mu_ for the whole paint so the worker can't
-    // commit a fresh result mid-draw.
+void AlbumDetailPage::paint(ID2D1RenderTarget* rt, const Theme& theme,
+                            D2D1_SIZE_F size) {
     const std::lock_guard<std::mutex> lk(mu_);
     lastWidthDip_ = size.width;
 
@@ -467,7 +403,7 @@ void PlaylistDetailPage::paint(ID2D1RenderTarget* rt, const Theme& theme,
             drawCentered(rt, theme, size, L"正在准备…");
             return;
         case Status::Loading:
-            drawCentered(rt, theme, size, L"正在加载歌单详情…");
+            drawCentered(rt, theme, size, L"正在加载专辑详情…");
             return;
         case Status::NotLoggedIn:
             drawCentered(rt, theme, size,
@@ -482,14 +418,13 @@ void PlaylistDetailPage::paint(ID2D1RenderTarget* rt, const Theme& theme,
     }
 
     const LayoutMetrics m = currentMetrics(theme);
-    lastMetrics_ = m;  // ★ M4: paint metrics cached for onLeftDown hit-test
+    lastMetrics_ = m;
     const DetailLayout layout =
-        computeDetailLayout(songs_.size(), size.width, m);
+        computeDetailLayout(info_.songs.size(), size.width, m);
     contentHeight_ = layout.contentHeight;
     const float maxScroll = std::max(0.0F, contentHeight_ - size.height);
     scrollY_ = std::clamp(scrollY_, 0.0F, maxScroll);
 
-    // --- Build shared renderer (also used for the song-list section) ---
     Renderer rn;
     rn.rt = rt;
     rn.titleFmt = makeFormat(theme.fontFamily, theme.sectionTitleSize, false,
@@ -512,8 +447,6 @@ void PlaylistDetailPage::paint(ID2D1RenderTarget* rt, const Theme& theme,
     rn.host = host_;
     rn.coverReadyMsg = kCoverReadyMessage;
 
-    // Auxiliary brush for the enqueue button fills + a banner title format
-    // distinct from the standard section title (NIT N3: 1.25x).
     ComPtr<ID2D1SolidColorBrush> selBrush;
     rt->CreateSolidColorBrush(theme.selection, selBrush.GetAddressOf());
     ComPtr<IDWriteTextFormat> bannerTitleFmt =
@@ -523,7 +456,6 @@ void PlaylistDetailPage::paint(ID2D1RenderTarget* rt, const Theme& theme,
         makeFormat(theme.fontFamily, theme.rowTitleSize,
                    /*centered=*/true, /*ellipsis=*/false);
 
-    // --- Banner ---
     const D2D1_RECT_F coverS = rn.screen(layout.bannerCover);
     if (rn.visible(coverS)) {
         rn.drawCover(coverS, info_.cover);
@@ -541,9 +473,8 @@ void PlaylistDetailPage::paint(ID2D1RenderTarget* rt, const Theme& theme,
                            btnHover_, btnPressing_);
     }
 
-    // --- Songs section ---
     drawSongListSection(
-        rn, layout.songs, songs_, L"歌曲列表",
+        rn, layout.songs, info_.songs, L"歌曲列表",
         [](const SongInfo& s) { return s.name; },
         [](const SongInfo& s) { return songArtistText(s); },
         [](const SongInfo& s) { return s.cover; });

@@ -184,19 +184,21 @@ void DiscoverPage::onMouseWheel(int wheelDelta, float topInsetDip) {
 }
 
 bool DiscoverPage::onLeftDown(float xDip, float yDip) {
-    if (!onPlaylistOpen_ || lastWidthDip_ <= 0.0F) {
-        return false;  // no source for navigation, or paint hasn't run yet
+    if (lastWidthDip_ <= 0.0F) {
+        return false;  // paint hasn't run yet
     }
     // ★ M4: convert viewport DIP -> content coord by adding scrollY_, then
     // hit-test against layout rects in content space.
     const float yContent = yDip + scrollY_;
-    PlaylistInfo target;
-    bool hit = false;
+    PlaylistInfo playlistTarget;
+    AlbumInfo albumTarget;
+    bool playlistHit = false;
+    bool albumHit = false;
     {
-        // ★ M3: hold mu_ for the read of playlists_ (worker-written) and copy
+        // ★ M3: hold mu_ for the read of the worker-written vectors and copy
         // the hit out of the lock; invoke the callback after release.
         const std::lock_guard<std::mutex> lk(mu_);
-        if (status_ != Status::Loaded || playlists_.empty()) {
+        if (status_ != Status::Loaded) {
             return false;
         }
         // ★ M4: hit-test must use the same metrics paint used (cached on the
@@ -204,23 +206,40 @@ bool DiscoverPage::onLeftDown(float xDip, float yDip) {
         const DiscoverLayout layout =
             computeLayout(songs_.size(), albums_.size(), playlists_.size(),
                           mvs_.size(), lastWidthDip_, lastMetrics_);
-        if (!layout.playlists.present) {
-            return false;
+        if (onAlbumOpen_ && layout.albums.present && !albums_.empty()) {
+            const std::size_t n =
+                std::min(layout.albums.items.size(), albums_.size());
+            for (std::size_t i = 0; i < n; ++i) {
+                const LayoutRect& r = layout.albums.items.at(i);
+                if (xDip >= r.left && xDip < r.right && yContent >= r.top &&
+                    yContent < r.bottom) {
+                    albumTarget = albums_.at(i);
+                    albumHit = true;
+                    break;
+                }
+            }
         }
-        const std::size_t n =
-            std::min(layout.playlists.items.size(), playlists_.size());
-        for (std::size_t i = 0; i < n; ++i) {
-            const LayoutRect& r = layout.playlists.items.at(i);
-            if (xDip >= r.left && xDip < r.right && yContent >= r.top &&
-                yContent < r.bottom) {
-                target = playlists_.at(i);
-                hit = true;
-                break;
+        if (!albumHit && onPlaylistOpen_ && layout.playlists.present &&
+            !playlists_.empty()) {
+            const std::size_t n =
+                std::min(layout.playlists.items.size(), playlists_.size());
+            for (std::size_t i = 0; i < n; ++i) {
+                const LayoutRect& r = layout.playlists.items.at(i);
+                if (xDip >= r.left && xDip < r.right && yContent >= r.top &&
+                    yContent < r.bottom) {
+                    playlistTarget = playlists_.at(i);
+                    playlistHit = true;
+                    break;
+                }
             }
         }
     }
-    if (hit) {
-        onPlaylistOpen_(target);
+    if (albumHit) {
+        onAlbumOpen_(albumTarget);
+        return true;
+    }
+    if (playlistHit) {
+        onPlaylistOpen_(playlistTarget);
         return true;
     }
     return false;
