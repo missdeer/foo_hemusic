@@ -1,16 +1,18 @@
 // foo_hemusic main UI panel (PLAN Phase 4/5: ui_element host).
 // ui_element_v2 users drag into the Default UI layout. Owns the d2d canvas +
-// theme snapshot and hosts a top tab bar (发现 / 搜索) switching between the
-// DiscoverPage and the SearchPage. Both pages are windowless (they paint into
-// this panel's render target); the only real child window is the search input
-// box (a Win32 EDIT) shown above the search content. Colors / fonts follow the
-// fb2k host theme (PLAN §3.5) and repaint on theme changes; the pages signal
-// completion via their own PostMessage constants.
+// theme snapshot and hosts a top tab bar (发现 / 搜索) plus a nav::Stack that
+// the detail pages (HEMUSIC-15+) push/pop onto. Discover / Search / Playlist
+// detail pages are all windowless (they paint into this panel's render
+// target); the only real child window is the search input box (a Win32 EDIT)
+// shown above the search content when the search root is active. Colors /
+// fonts follow the fb2k host theme (PLAN §3.5) and repaint on theme changes;
+// the pages signal completion via their own PostMessage constants.
 
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
 #include <SDK/foobar2000.h>
+#include <SDK/popup_message.h>
 #include <SDK/ui_element.h>
 
 #include <windows.h>
@@ -30,7 +32,9 @@
 
 #include "core/session.h"
 #include "ui/d2d.h"
+#include "ui/nav.h"
 #include "ui/pages/discover_page.h"
+#include "ui/pages/playlist_detail_page.h"
 #include "ui/pages/search_page.h"
 #include "ui/pages/section_render.h"
 #include "ui/theme.h"
@@ -56,11 +60,16 @@ constexpr UINT WM_HEMUSIC_AUTH_CHANGED = WM_APP + 2;
 constexpr UINT_PTR kSearchEditId = 1;
 
 // Top chrome heights (DIP). Tab bar always present; the search box band only
-// applies on the search tab (the EDIT is hidden otherwise).
+// applies on the search root (the EDIT is hidden otherwise). kTabPadding is
+// widened to 56 DIP (★ S1) so the back-button slot [kBackBtnLeft,
+// kBackBtnRight] sits in reserved space without shifting tab positions when
+// canGoBack flips.
 constexpr float kTabBarH = 36.0F;
 constexpr float kSearchBoxH = 40.0F;
 constexpr float kTabWidth = 84.0F;
-constexpr float kTabPadding = 12.0F;      // left inset of the first tab
+constexpr float kTabPadding = 56.0F;  // left inset of the first tab
+constexpr float kBackBtnLeft = 8.0F;
+constexpr float kBackBtnRight = 48.0F;
 constexpr float kSearchBoxMargin = 4.0F;  // inset of the EDIT within its band
 constexpr float kUnderlineH = 2.0F;       // active-tab underline thickness
 constexpr float kUnderlineInset = 14.0F;  // underline horizontal inset per tab
@@ -70,10 +79,27 @@ enum class Tab : std::uint8_t { Discover = 0, Search = 1 };
 
 constexpr int kTabCount = 2;
 
+// Which kind of click capture the main panel is currently routing.
+enum class CaptureOwner : std::uint8_t { None, BackBtn, Page };
+
+nav::PageKind tabToKind(Tab t) {
+    return t == Tab::Search ? nav::PageKind::Search : nav::PageKind::Discover;
+}
+
+const char* tabLabel(Tab t) { return t == Tab::Search ? "搜索" : "发现"; }
+
 // DIP rect of tab `i` within the tab bar.
 D2D1_RECT_F tabRectDip(int i) {
     const float left = kTabPadding + static_cast<float>(i) * kTabWidth;
     return D2D1::RectF(left, 0.0F, left + kTabWidth, kTabBarH);
+}
+
+D2D1_RECT_F backBtnRectDip() {
+    return D2D1::RectF(kBackBtnLeft, 0.0F, kBackBtnRight, kTabBarH);
+}
+
+bool rectHit(const D2D1_RECT_F& r, float x, float y) {
+    return x >= r.left && x < r.right && y >= r.top && y < r.bottom;
 }
 
 }  // namespace
@@ -107,6 +133,25 @@ class MainPanel : public ui_element_instance {
         m_canvas = std::make_unique<d2d::HwndCanvas>(m_hwnd);
         m_discover.attach(m_hwnd);
         m_search.attach(m_hwnd);
+        m_playlistDetail.attach(m_hwnd);
+        m_stack.replaceRoot({nav::PageKind::Discover, "发现", {}});
+        m_discover.setOnPlaylistOpen(
+            [this](const PlaylistInfo& p) { openPlaylistDetail(p); });
+        m_playlistDetail.setOnEnqueueAll([](const PlaylistInfo& p,
+                                            const std::vector<SongInfo>& s) {
+            // ★ M1: SDK helper -- popup_message::g_show, NOT
+            // popup_message_v3::show (that signature does not exist).
+            // Default-construct then append to dodge the SDK's stringLite
+            // virtual-call-in-ctor analyzer warning.
+            pfc::string8 msg;
+            msg =
+                "全部入列功能尚未实装(HEMUSIC-5: playlist_writer)\n当前歌单：";
+            msg += p.name.c_str();
+            msg += " (";
+            msg += pfc::format_int(static_cast<int64_t>(s.size()));
+            msg += " 首)";
+            popup_message::g_show(msg, "HE-Music");
+        });
         createSearchEdit();
         m_discover.load();
         // Re-pull when login/logout changes auth state. The callback fires on
@@ -177,6 +222,18 @@ class MainPanel : public ui_element_instance {
                 case WM_LBUTTONDOWN:
                     self->onLeftDown(GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
                     return 0;
+                case WM_LBUTTONUP:
+                    self->onLeftUp(GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
+                    return 0;
+                case WM_MOUSEMOVE:
+                    self->onMouseMove(GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
+                    return 0;
+                case WM_MOUSELEAVE:
+                    self->onMouseLeave();
+                    return 0;
+                case WM_CAPTURECHANGED:
+                    self->onCaptureChanged(reinterpret_cast<HWND>(lp));
+                    return 0;
                 case WM_MOUSEWHEEL:
                     self->onWheel(GET_WHEEL_DELTA_WPARAM(wp));
                     return 0;
@@ -188,9 +245,20 @@ class MainPanel : public ui_element_instance {
                 case SearchPage::kCoverReadyMessage:
                     self->m_search.onHostMessage(msg, wp, lp);
                     return 0;
+                case PlaylistDetailPage::kDoneMessage:
+                case PlaylistDetailPage::kCoverReadyMessage:
+                    self->m_playlistDetail.onHostMessage(msg, wp, lp);
+                    return 0;
                 case WM_HEMUSIC_AUTH_CHANGED:
+                    // ★★ S7: discover/search workers may still in-flight after
+                    // logout (known, not in HEMUSIC-15 scope); detail page is
+                    // bumped via reset() to drop its workers' writes.
                     self->m_discover.load();
                     self->m_search.reset();
+                    self->m_playlistDetail.reset();
+                    self->m_stack.replaceRoot(
+                        {tabToKind(self->m_tab), tabLabel(self->m_tab), {}});
+                    self->updateSearchEditVisibility();
                     InvalidateRect(hwnd, nullptr, FALSE);
                     return 0;
                 case WM_DESTROY:
@@ -236,8 +304,16 @@ class MainPanel : public ui_element_instance {
         return DefSubclassProc(hwnd, msg, wp, lp);
     }
 
+    nav::PageKind currentKind() const {
+        return m_stack.empty() ? tabToKind(m_tab) : m_stack.current().kind;
+    }
+
+    // The search EDIT band only shows when the search root is current; detail
+    // pages pushed onto the stack (PlaylistDetail etc.) hide it even when the
+    // user's last selected tab was Search.
     float contentTopDip() const {
-        return m_tab == Tab::Search ? (kTabBarH + kSearchBoxH) : kTabBarH;
+        return currentKind() == nav::PageKind::Search ? (kTabBarH + kSearchBoxH)
+                                                      : kTabBarH;
     }
 
     void createSearchEdit() {
@@ -305,40 +381,206 @@ class MainPanel : public ui_element_instance {
     }
 
     void switchTab(Tab tab) {
-        if (m_tab == tab) {
+        // ★ S3: if the user clicks the active tab while a detail page is
+        // pushed, pop back to the tab's root (replaceRoot clears the trail).
+        const bool sameTab = (m_tab == tab);
+        if (sameTab && !m_stack.canGoBack()) {
             return;
         }
         m_tab = tab;
-        if (m_searchEdit != nullptr) {
-            ShowWindow(m_searchEdit, tab == Tab::Search ? SW_SHOW : SW_HIDE);
-            if (tab == Tab::Search) {
-                SetFocus(m_searchEdit);
-            }
-        }
+        m_stack.replaceRoot({tabToKind(tab), tabLabel(tab), {}});
+        // ★★ S7: bump detail page's generation so any in-flight worker drops
+        // its result instead of writing into stale state visible after the pop.
+        m_playlistDetail.reset();
+        updateSearchEditVisibility();
         InvalidateRect(m_hwnd, nullptr, FALSE);
     }
 
-    void onLeftDown(int xPx, int yPx) {
-        const float scale = d2d::dpiScaleForWindow(m_hwnd);
-        const float xDip = static_cast<float>(xPx) / (scale > 0 ? scale : 1.0F);
-        const float yDip = static_cast<float>(yPx) / (scale > 0 ? scale : 1.0F);
-        if (yDip > kTabBarH) {
-            return;  // below the tab bar
+    void updateSearchEditVisibility() {
+        if (m_searchEdit == nullptr) {
+            return;
         }
-        for (int i = 0; i < kTabCount; ++i) {
-            const D2D1_RECT_F r = tabRectDip(i);
-            if (xDip >= r.left && xDip < r.right) {
-                switchTab(static_cast<Tab>(i));
+        const bool show = (currentKind() == nav::PageKind::Search);
+        ShowWindow(m_searchEdit, show ? SW_SHOW : SW_HIDE);
+        if (show) {
+            SetFocus(m_searchEdit);
+        }
+    }
+
+    void openPlaylistDetail(const PlaylistInfo& p) {
+        nav::PageEntry e;
+        e.kind = nav::PageKind::PlaylistDetail;
+        e.title = p.name;
+        e.params["id"] = p.id;
+        e.params["platform"] = p.platform;
+        e.params["title"] = p.name;
+        m_stack.push(e);
+        m_playlistDetail.enter(e);
+        updateSearchEditVisibility();
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+
+    void popPage() {
+        if (!m_stack.canGoBack()) {
+            return;
+        }
+        m_stack.pop();
+        // ★★ S7: stop the (now-orphaned) detail worker from clobbering the
+        // page state the user just navigated back to.
+        m_playlistDetail.reset();
+        updateSearchEditVisibility();
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+
+    // Converts a physical mouse point to DIP. Returns false for a degenerate
+    // scale (defensive; dpiScaleForWindow falls back to 96 when unknown).
+    void pxToDip(int xPx, int yPx, float& xDip, float& yDip) const {
+        const float scale = d2d::dpiScaleForWindow(m_hwnd);
+        const float s = scale > 0 ? scale : 1.0F;
+        xDip = static_cast<float>(xPx) / s;
+        yDip = static_cast<float>(yPx) / s;
+    }
+
+    void ensureMouseTracking() {
+        if (m_trackingMouse) {
+            return;
+        }
+        TRACKMOUSEEVENT t{sizeof(TRACKMOUSEEVENT), TME_LEAVE, m_hwnd, 0};
+        if (TrackMouseEvent(&t) != 0) {
+            m_trackingMouse = true;
+        }
+    }
+
+    void onLeftDown(int xPx, int yPx) {
+        float xDip = 0;
+        float yDip = 0;
+        pxToDip(xPx, yPx, xDip, yDip);
+        // Chrome (back button + tab bar) lives in [0, kTabBarH).
+        if (yDip < kTabBarH) {
+            if (m_stack.canGoBack() && rectHit(backBtnRectDip(), xDip, yDip)) {
+                m_backBtnPressing = true;
+                m_backBtnHover = true;
+                SetCapture(m_hwnd);
+                m_capture = CaptureOwner::BackBtn;
+                InvalidateRect(m_hwnd, nullptr, FALSE);
                 return;
             }
+            for (int i = 0; i < kTabCount; ++i) {
+                const D2D1_RECT_F r = tabRectDip(i);
+                if (xDip >= r.left && xDip < r.right) {
+                    switchTab(static_cast<Tab>(i));
+                    return;
+                }
+            }
+            return;
+        }
+        const float top = contentTopDip();
+        if (yDip < top) {
+            return;  // inside the search-box band (Win32 EDIT owns input)
+        }
+        // Forward to the current page in page-content DIP coordinates.
+        if (currentKind() == nav::PageKind::Discover) {
+            m_discover.onLeftDown(xDip, yDip - top);
+        } else if (currentKind() == nav::PageKind::PlaylistDetail) {
+            if (m_playlistDetail.onLeftDown(xDip, yDip - top)) {
+                SetCapture(m_hwnd);
+                m_capture = CaptureOwner::Page;
+            }
+        }
+        // SearchPage clicks are handled by the EDIT subclass; nothing to do.
+    }
+
+    void onLeftUp(int xPx, int yPx) {
+        float xDip = 0;
+        float yDip = 0;
+        pxToDip(xPx, yPx, xDip, yDip);
+        const CaptureOwner owner = m_capture;
+        // ★ R1-M1: dispatch the click outcome BEFORE ReleaseCapture.
+        // ReleaseCapture synchronously fires WM_CAPTURECHANGED ->
+        // onCaptureLost(), which clears the page's btnPressing_ / our
+        // m_backBtnPressing; if we release first, the subsequent dispatch
+        // sees pressing == false and never fires the callback.
+        m_capture = CaptureOwner::None;
+        if (owner == CaptureOwner::BackBtn) {
+            const bool over = rectHit(backBtnRectDip(), xDip, yDip);
+            m_backBtnPressing = false;
+            m_backBtnHover = over;
+            ReleaseCapture();  // safe: state already consumed
+            if (over) {
+                popPage();
+            } else {
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+            }
+            return;
+        }
+        if (owner == CaptureOwner::Page) {
+            const float top = contentTopDip();
+            m_playlistDetail.onLeftUp(xDip, yDip - top);
+            ReleaseCapture();  // page already consumed its pressing flag
+        }
+    }
+
+    void onMouseMove(int xPx, int yPx) {
+        ensureMouseTracking();
+        float xDip = 0;
+        float yDip = 0;
+        pxToDip(xPx, yPx, xDip, yDip);
+        // Back button hover follows the cursor regardless of capture state.
+        const bool overBack =
+            m_stack.canGoBack() && rectHit(backBtnRectDip(), xDip, yDip);
+        if (overBack != m_backBtnHover) {
+            m_backBtnHover = overBack;
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
+        if (m_capture == CaptureOwner::Page ||
+            (m_capture == CaptureOwner::None &&
+             currentKind() == nav::PageKind::PlaylistDetail)) {
+            const float top = contentTopDip();
+            const float pageY = yDip - top;
+            // Negative pageY (in chrome) still gets forwarded so the page can
+            // clear its own hover state when the cursor drifts up.
+            m_playlistDetail.onMouseMove(xDip, pageY);
+        }
+    }
+
+    void onMouseLeave() {
+        m_trackingMouse = false;
+        if (m_backBtnHover) {
+            m_backBtnHover = false;
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
+        if (currentKind() == nav::PageKind::PlaylistDetail) {
+            m_playlistDetail.onMouseLeave();
+        }
+    }
+
+    void onCaptureChanged(HWND newCaptureHwnd) {
+        if (newCaptureHwnd == m_hwnd) {
+            return;  // we re-took capture ourselves; nothing to do
+        }
+        const CaptureOwner owner = m_capture;
+        m_capture = CaptureOwner::None;
+        if (owner == CaptureOwner::BackBtn) {
+            m_backBtnPressing = false;
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        } else if (owner == CaptureOwner::Page) {
+            m_playlistDetail.onCaptureLost();
         }
     }
 
     void onWheel(int delta) {
-        if (m_tab == Tab::Discover) {
-            m_discover.onMouseWheel(delta, kTabBarH);
-        } else {
-            m_search.onMouseWheel(delta, kTabBarH + kSearchBoxH);
+        switch (currentKind()) {
+            case nav::PageKind::Discover:
+                m_discover.onMouseWheel(delta, kTabBarH);
+                break;
+            case nav::PageKind::Search:
+                m_search.onMouseWheel(delta, kTabBarH + kSearchBoxH);
+                break;
+            case nav::PageKind::PlaylistDetail:
+                m_playlistDetail.onMouseWheel(delta, kTabBarH);
+                break;
+            default:
+                break;
         }
     }
 
@@ -353,6 +595,26 @@ class MainPanel : public ui_element_instance {
         text.resize(static_cast<size_t>(copied));
         m_search.search(text);
         InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+
+    void drawBackButton(ID2D1RenderTarget* rt, IDWriteTextFormat* tf,
+                        ID2D1SolidColorBrush* textB,
+                        ID2D1SolidColorBrush* subB) {
+        if (!m_stack.canGoBack()) {
+            return;
+        }
+        const D2D1_RECT_F r = backBtnRectDip();
+        // Subtle hover fill (secondary text alpha-tinted as a cheap surface).
+        if (m_backBtnHover) {
+            const D2D1_COLOR_F bg{0.5F, 0.5F, 0.5F,
+                                  m_backBtnPressing ? 0.35F : 0.18F};
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> hoverB;
+            if (SUCCEEDED(
+                    rt->CreateSolidColorBrush(bg, hoverB.GetAddressOf()))) {
+                rt->FillRectangle(r, hoverB.Get());
+            }
+        }
+        drawText(rt, tf, L"‹ 返回", m_backBtnHover ? textB : subB, r);
     }
 
     void drawTabBar(ID2D1RenderTarget* rt, const Theme& theme,
@@ -371,6 +633,8 @@ class MainPanel : public ui_element_instance {
                                              selB.GetAddressOf()))) {
             return;
         }
+        drawBackButton(rt, tf.Get(), textB.Get(), subB.Get());
+
         static const std::array<const wchar_t*, kTabCount> kLabels = {L"发现",
                                                                       L"搜索"};
         for (int i = 0; i < kTabCount; ++i) {
@@ -412,10 +676,18 @@ class MainPanel : public ui_element_instance {
             D2D1_MATRIX_3X2_F prev{};
             rt->GetTransform(&prev);
             rt->SetTransform(D2D1::Matrix3x2F::Translation(0.0F, top) * prev);
-            if (m_tab == Tab::Discover) {
-                m_discover.paint(rt, theme, pageSize);
-            } else {
-                m_search.paint(rt, theme, pageSize);
+            switch (currentKind()) {
+                case nav::PageKind::Discover:
+                    m_discover.paint(rt, theme, pageSize);
+                    break;
+                case nav::PageKind::Search:
+                    m_search.paint(rt, theme, pageSize);
+                    break;
+                case nav::PageKind::PlaylistDetail:
+                    m_playlistDetail.paint(rt, theme, pageSize);
+                    break;
+                default:
+                    break;
             }
             rt->SetTransform(prev);
             rt->PopAxisAlignedClip();
@@ -437,6 +709,15 @@ class MainPanel : public ui_element_instance {
     std::unique_ptr<d2d::HwndCanvas> m_canvas;
     DiscoverPage m_discover;
     SearchPage m_search;
+    PlaylistDetailPage m_playlistDetail;
+    nav::Stack m_stack;
+    // Capture lifecycle (★ M5): MainPanel SetCapture's its own HWND when the
+    // back button or current page reports a button-press, so subsequent
+    // WM_MOUSEMOVE / LBUTTONUP / CAPTURECHANGED route to us.
+    CaptureOwner m_capture = CaptureOwner::None;
+    bool m_trackingMouse = false;  // TrackMouseEvent(TME_LEAVE) armed?
+    bool m_backBtnHover = false;
+    bool m_backBtnPressing = false;
     Session::AuthListenerId m_authListener = 0;
     ui_element_config::ptr m_config;
     ui_element_instance_callback::ptr m_callback;

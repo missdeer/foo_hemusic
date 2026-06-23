@@ -23,6 +23,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -32,6 +33,7 @@
 #include "api/mv.h"
 #include "api/playlist.h"
 #include "api/song.h"
+#include "ui/pages/discover_layout.h"
 #include "ui/theme.h"
 
 namespace hemusic::ui {
@@ -81,6 +83,17 @@ class DiscoverPage {
     // only.
     void onMouseWheel(int wheelDelta, float topInsetDip);
 
+    // Wire-once callback fired when the user clicks one of the featured
+    // playlist cards. MainPanel pushes a PlaylistDetail PageEntry from this.
+    void setOnPlaylistOpen(std::function<void(const PlaylistInfo&)> cb) {
+        onPlaylistOpen_ = std::move(cb);
+    }
+
+    // Page-content DIP coordinates (MainPanel already subtracted
+    // contentTopDip()). Hits the featured-playlist grid; misses are silent.
+    // Returns true if a card was activated. UI thread only.
+    bool onLeftDown(float xDip, float yDip);
+
    private:
     enum class Status : std::uint8_t {
         Idle,
@@ -109,6 +122,9 @@ class DiscoverPage {
 
     float scrollY_ = 0.0F;        // vertical scroll offset (UI thread)
     float contentHeight_ = 0.0F;  // last measured content height (UI thread)
+    float lastWidthDip_ = 0.0F;   // last paint() width, used by hit-test
+    LayoutMetrics lastMetrics_;   // last paint() metrics; hit-test must reuse
+    std::function<void(const PlaylistInfo&)> onPlaylistOpen_;
 };
 
 }  // namespace hemusic::ui

@@ -274,7 +274,7 @@ foo_hemusic/
    - [ ] [HEMUSIC-33](https://jira.ismisv.com/browse/HEMUSIC-33) — 联想浮层（`/v1/search/suggest`，输入防抖 + 浮层）
    - [ ] [HEMUSIC-34](https://jira.ismisv.com/browse/HEMUSIC-34) — 分类 Tab 切换 + 翻页（`/v1/{type}/search?page_index=&page_size=`）
    - [ ] [HEMUSIC-35](https://jira.ismisv.com/browse/HEMUSIC-35) — 热搜词 / 默认搜索词（`/v1/search/hotkey`、`/v1/search/default`）
-4. [HEMUSIC-15](https://jira.ismisv.com/browse/HEMUSIC-15) — **歌单详情**（banner + 歌曲列表 + 全部入列）
+4. ~~[HEMUSIC-15](https://jira.ismisv.com/browse/HEMUSIC-15) — **歌单详情**（banner + 歌曲列表 + 全部入列）~~ ✅ 已完成（PlaylistDetailPage windowless + nav.Stack 首次接 main_panel + 返回按钮 + 完整 mouse capture 流 + 入列 popup stub；HEMUSIC-5 playlist_writer 仍延后），详见 [`DONE.md`](./DONE.md#phase-5--ui-业务页面)。
 5. [HEMUSIC-16](https://jira.ismisv.com/browse/HEMUSIC-16) — **专辑详情**（同歌单详情结构）
 6. [HEMUSIC-17](https://jira.ismisv.com/browse/HEMUSIC-17) — **歌手详情**（歌曲 / 专辑 / MV Tab，分页加载）
 7. [HEMUSIC-18](https://jira.ismisv.com/browse/HEMUSIC-18) — **排行榜 / 电台 / 歌单广场**（共用卡片网格组件）

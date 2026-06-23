@@ -183,6 +183,49 @@ void DiscoverPage::onMouseWheel(int wheelDelta, float topInsetDip) {
     }
 }
 
+bool DiscoverPage::onLeftDown(float xDip, float yDip) {
+    if (!onPlaylistOpen_ || lastWidthDip_ <= 0.0F) {
+        return false;  // no source for navigation, or paint hasn't run yet
+    }
+    // ★ M4: convert viewport DIP -> content coord by adding scrollY_, then
+    // hit-test against layout rects in content space.
+    const float yContent = yDip + scrollY_;
+    PlaylistInfo target;
+    bool hit = false;
+    {
+        // ★ M3: hold mu_ for the read of playlists_ (worker-written) and copy
+        // the hit out of the lock; invoke the callback after release.
+        const std::lock_guard<std::mutex> lk(mu_);
+        if (status_ != Status::Loaded || playlists_.empty()) {
+            return false;
+        }
+        // ★ M4: hit-test must use the same metrics paint used (cached on the
+        // last paint), otherwise rects drift from what the user sees.
+        const DiscoverLayout layout =
+            computeLayout(songs_.size(), albums_.size(), playlists_.size(),
+                          mvs_.size(), lastWidthDip_, lastMetrics_);
+        if (!layout.playlists.present) {
+            return false;
+        }
+        const std::size_t n =
+            std::min(layout.playlists.items.size(), playlists_.size());
+        for (std::size_t i = 0; i < n; ++i) {
+            const LayoutRect& r = layout.playlists.items.at(i);
+            if (xDip >= r.left && xDip < r.right && yContent >= r.top &&
+                yContent < r.bottom) {
+                target = playlists_.at(i);
+                hit = true;
+                break;
+            }
+        }
+    }
+    if (hit) {
+        onPlaylistOpen_(target);
+        return true;
+    }
+    return false;
+}
+
 void DiscoverPage::paint(ID2D1RenderTarget* rt, const Theme& theme,
                          D2D1_SIZE_F size) {
     const std::lock_guard<std::mutex> lk(mu_);
@@ -214,6 +257,11 @@ void DiscoverPage::paint(ID2D1RenderTarget* rt, const Theme& theme,
     m.padding = theme.padding;
     m.rowHeight = theme.rowHeight;
     m.titleBand = theme.sectionTitleSize * kTitleBandFactor;
+
+    // Cache for onLeftDown so hit-test reuses the same width + metrics that
+    // produced the rects on screen (★ M4).
+    lastWidthDip_ = size.width;
+    lastMetrics_ = m;
 
     const DiscoverLayout layout =
         computeLayout(songs_.size(), albums_.size(), playlists_.size(),

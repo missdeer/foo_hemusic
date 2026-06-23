@@ -48,6 +48,14 @@ inline constexpr float kSquareCardTextH = 46.0F;
 inline constexpr float kVideoCardWidth = 300.0F;
 inline constexpr float kVideoAspect = 9.0F / 16.0F;
 inline constexpr float kVideoCardTextH = 40.0F;
+// Playlist-detail banner + enqueue button. `detail` prefix flags them as
+// consumed only by playlist_detail_layout (computeLayout for discover/search
+// never reads these fields).
+inline constexpr float kDetailBannerHeight = 160.0F;
+inline constexpr float kDetailBannerCoverSide = 136.0F;
+inline constexpr float kDetailBannerGap = 16.0F;  // cover -> info
+inline constexpr float kDetailEnqueueBtnW = 132.0F;
+inline constexpr float kDetailEnqueueBtnH = 32.0F;
 }  // namespace layout_defaults
 
 struct LayoutMetrics {
@@ -63,6 +71,12 @@ struct LayoutMetrics {
     float videoCardWidth = layout_defaults::kVideoCardWidth;  // mv cards
     float videoAspect = layout_defaults::kVideoAspect;        // cover h / w
     float videoCardTextH = layout_defaults::kVideoCardTextH;
+    // Detail-page banner (playlist_detail_layout only):
+    float detailBannerHeight = layout_defaults::kDetailBannerHeight;
+    float detailBannerCoverSide = layout_defaults::kDetailBannerCoverSide;
+    float detailBannerGap = layout_defaults::kDetailBannerGap;
+    float detailEnqueueBtnW = layout_defaults::kDetailEnqueueBtnW;
+    float detailEnqueueBtnH = layout_defaults::kDetailEnqueueBtnH;
 };
 
 // Largest column count whose cards (>= targetWidth each, `gap` between) fit in
